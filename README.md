@@ -1,0 +1,411 @@
+# FlairSim
+
+**Drone simulator over FLAIR-HUB aerial imagery.**
+
+FlairSim is a lightweight, pure-Python drone simulator that flies a
+virtual UAV over real French aerial imagery from the
+[FLAIR-HUB](https://arxiv.org/abs/2506.07080) dataset (IGN).  It exposes
+a **local HTTP API** so that any external program (VLM agent, notebook,
+another language) can pilot the drone and receive observations (image +
+telemetry).
+
+> **Academic context** -- *Fil rouge* for the
+> Mastere Specialise Big Data / IA at Telecom Paris.
+
+---
+
+## Key features
+
+| Feature | Description |
+|---------|-------------|
+| **Real aerial imagery** | Flies over 0.2 m/px IGN orthophotos (FLAIR-HUB D004, D005, ...) |
+| **HTTP REST API** | Local server on `localhost:8000`. Any program can send actions and receive image + telemetry via HTTP |
+| **CLI to launch** | `flairsim-server --data-dir path/to/data` -- one command to start |
+| **Interactive viewer** | Pygame-based desktop viewer with HUD, minimap, and three modes (local / observe / fly) |
+| **SSE push channel** | `GET /events` streams observations to observer viewers in real time |
+| **Telemetry logging** | Full flight log with position, displacement, clipping info |
+| **Multi-modality ready** | Architecture supports AERIAL_RGBI, DEM, SPOT, Sentinel-1/2 |
+| **Well tested** | 268 tests (unit + integration + server + SSE), all passing |
+
+---
+
+## Architecture
+
+```
+flairsim/
+  map/           # GeoTIFF tile loading, spatial queries (MapManager, TileLoader, Modality)
+  drone/         # Drone state & physics, camera model, telemetry (Drone, CameraModel, FlightLog)
+  core/          # Simulator engine, actions, observations (FlairSimulator, Action, Observation)
+  server/        # HTTP REST API (FastAPI) -- the interface for external agents
+  viewer/        # Pygame real-time visualization (FlairViewer, HUD, Minimap)
+```
+
+Data flow:
+
+```
+External Agent (VLM, script, notebook)
+    |
+    |  POST /step  {"dx": 10, "dy": 0, "dz": -5}
+    v
+FlairSim HTTP Server (localhost:8000)
+    |
+    v
+FlairSimulator.step()
+    |-- Drone.move()            (apply displacement, clamp to bounds)
+    |-- CameraModel.capture()   (extract image from map tiles)
+    |-- FlightLog.record()      (log telemetry)
+    |
+    v
+JSON response:
+    {
+      "step": 42,
+      "done": false,
+      "image_base64": "<PNG in base64>",
+      "drone_state": {"x": ..., "y": ..., "z": ..., ...},
+      "ground_footprint": 200.0,
+      "ground_resolution": 0.4
+    }
+```
+
+---
+
+## Installation
+
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) >= 0.4
+- FLAIR-HUB data (at least one `D0xx_AERIAL_RGBI` directory)
+
+### Install
+
+```bash
+cd simulateur
+
+# Install everything (core + server + viewer + dev tools)
+uv sync --all-extras
+```
+
+### Dependency groups
+
+| Group | Install command | Packages |
+|-------|-----------------|----------|
+| Core | `uv sync` | numpy, rasterio, Pillow |
+| Server | `uv sync --extra server` | + fastapi, uvicorn, sse-starlette |
+| Viewer | `uv sync --extra viewer` | + pygame |
+| Dev | `uv sync --dev` | + pytest, pytest-asyncio, ruff, httpx |
+| Everything | `uv sync --all-extras` | All of the above |
+
+---
+
+## Usage
+
+### 1. Start the simulator server
+
+```bash
+# Recommended (works everywhere)
+uv run python -m flairsim.server --data-dir path/to/D004-2021_AERIAL_RGBI
+
+# Or via the installed console script (after `pip install flairsim[server]`)
+flairsim-server --data-dir path/to/D004-2021_AERIAL_RGBI
+```
+
+> **Note (macOS editable installs)**: With `uv sync` (editable mode),
+> macOS may set `UF_HIDDEN` on `.pth` files, causing the `flairsim-server`
+> console script to fail with `ModuleNotFoundError`.  Use
+> `uv run python -m flairsim.server` instead, which always works.
+> Non-editable installs (`pip install .`) are not affected.
+
+The server starts on `http://127.0.0.1:8000`. An auto-generated API doc
+is available at `http://127.0.0.1:8000/docs` (Swagger UI).
+
+**Full CLI options:**
+
+```
+uv run python -m flairsim.server --data-dir <PATH> [OPTIONS]
+
+  --host          Host to bind (default: 127.0.0.1)
+  --port          Port (default: 8000)
+  --roi           ROI to load (default: auto-select largest)
+  --max-steps     Max steps per episode (default: 500)
+  --altitude      Default altitude in metres (default: 100)
+  --image-size    Camera output resolution in px (default: 500)
+  --fov           Camera FOV in degrees (default: 90)
+  --no-preload    Don't preload tiles (saves RAM)
+  -v              Debug logging
+```
+
+### 2. Communicate from an external agent
+
+Once the server is running, any program can pilot the drone via HTTP:
+
+```python
+import httpx
+import base64
+
+client = httpx.Client(base_url="http://127.0.0.1:8000")
+
+# Start an episode
+obs = client.post("/reset").json()
+print(f"Drone at ({obs['drone_state']['x']:.0f}, {obs['drone_state']['y']:.0f})")
+
+# Fly the drone
+while not obs["done"]:
+    obs = client.post("/step", json={"dx": 10.0, "dy": 0.0, "dz": -2.0}).json()
+
+    # Decode the image (PNG base64 -> bytes)
+    image_bytes = base64.b64decode(obs["image_base64"])
+
+    # Use obs["drone_state"], obs["ground_footprint"], obs["ground_resolution"]
+    # to make decisions
+
+# Check result
+if obs["done"]:
+    print(obs["result"])
+```
+
+This also works from **any language** -- curl, JavaScript, Go, etc.:
+
+```bash
+# Start episode
+curl -X POST http://127.0.0.1:8000/reset
+
+# Move drone
+curl -X POST http://127.0.0.1:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"dx": 10, "dy": 5, "dz": 0}'
+
+# Get current state
+curl http://127.0.0.1:8000/state
+
+# Get flight log
+curl http://127.0.0.1:8000/telemetry
+
+# Get config / map info
+curl http://127.0.0.1:8000/config
+
+# Subscribe to SSE observation stream (stays open)
+curl -N http://127.0.0.1:8000/events
+```
+
+### 3. API endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/reset` | POST | Start a new episode. Body (optional): `{"x", "y", "z"}` |
+| `/step` | POST | Send an action. Body: `{"dx", "dy", "dz", "action_type"}` |
+| `/state` | GET | Current drone state (no simulation advance) |
+| `/telemetry` | GET | Full flight log for current episode |
+| `/config` | GET | Simulator config, map bounds, drone/camera params |
+| `/events` | GET | Server-Sent Events stream (observations pushed on reset/step) |
+
+**Action types** for `/step`:
+- `"move"` (default) -- move the drone by (dx, dy, dz) metres
+- `"found"` -- declare target found (ends episode)
+- `"stop"` -- voluntarily end episode
+
+### 4. Interactive viewer (pygame)
+
+The viewer supports three modes:
+
+#### Local mode (default)
+
+Fly the drone manually with keyboard controls, using a local simulator
+(no server needed):
+
+```bash
+uv run python -m flairsim.viewer --data-dir path/to/D004-2021_AERIAL_RGBI
+```
+
+#### Observer mode
+
+Connect to a running server and watch what an external agent is doing
+in real time (read-only, no keyboard flight):
+
+```bash
+# Start server in one terminal
+uv run python -m flairsim.server --data-dir path/to/data
+
+# Watch from another terminal
+uv run python -m flairsim.viewer --mode observe --server-url http://127.0.0.1:8000
+```
+
+The observer connects via SSE (`GET /events`) and receives every
+observation pushed by the server whenever `/reset` or `/step` is called.
+
+#### Fly mode
+
+Connect to a running server and pilot the drone via keypresses (sends
+`POST /step` on each keypress):
+
+```bash
+uv run python -m flairsim.viewer --mode fly --server-url http://127.0.0.1:8000
+```
+
+**Keyboard controls:**
+
+| Key | Action |
+|-----|--------|
+| Z / Up | Move north |
+| S / Down | Move south |
+| Q / Left | Move west |
+| D / Right | Move east |
+| A | Descend |
+| E | Ascend |
+| +/- | Adjust move step size |
+| Space | Declare FOUND |
+| R | Reset episode |
+| H | Toggle HUD |
+| M | Toggle minimap |
+| Escape | Quit |
+
+**Options:** `--window-size`, `--move-step`, `--altitude`, `--roi`, etc.
+Run `uv run python -m flairsim.viewer --help` for the full list.
+
+### 5. Observation response format
+
+```json
+{
+  "step": 42,
+  "done": false,
+  "drone_state": {
+    "x": 923456.2,
+    "y": 6345123.8,
+    "z": 100.0,
+    "heading": 0.0,
+    "step_count": 42,
+    "total_distance": 523.4
+  },
+  "ground_footprint": 200.0,
+  "ground_resolution": 0.4,
+  "image_base64": "<base64 PNG>",
+  "image_width": 500,
+  "image_height": 500,
+  "result": null,
+  "metadata": {}
+}
+```
+
+When `done=true`, the `result` field contains:
+```json
+{
+  "success": false,
+  "reason": "Agent declared FOUND (no target configured for evaluation).",
+  "steps_taken": 42,
+  "distance_travelled": 523.4
+}
+```
+
+---
+
+## FLAIR-HUB data
+
+FlairSim uses the [FLAIR-HUB](https://arxiv.org/abs/2506.07080) dataset published by
+IGN (Institut national de l'information geographique et forestiere).
+
+### Data structure
+
+```
+D004-2021_AERIAL_RGBI/
+  ROI_0001/
+    D004_AERIAL_RGBI_ROI_0001_000-000.tif
+    D004_AERIAL_RGBI_ROI_0001_000-001.tif
+    ...
+  ROI_0002/
+    ...
+```
+
+Each patch is a 512 x 512 pixel GeoTIFF in EPSG:2154 (Lambert-93) covering
+102.4m x 102.4m at 0.2 m/px.  Patches within a ROI form a contiguous grid
+that the simulator stitches into a seamless flyable map.
+
+---
+
+## Camera model
+
+The camera always points nadir (straight down). Ground coverage depends on altitude:
+
+| Altitude | Footprint | GSD (m/px) |
+|----------|-----------|-----------|
+| 10 m | 20 m | 0.04 |
+| 50 m | 100 m | 0.20 (native resolution) |
+| 100 m | 200 m | 0.40 |
+| 200 m | 400 m | 0.80 |
+| 500 m | 1000 m | 2.00 |
+
+Formula: `footprint = 2 * altitude * tan(FOV/2)`, GSD = footprint / image_size.
+
+---
+
+## Running the tests
+
+```bash
+uv run pytest            # 268 tests, ~5s
+uv run pytest -v         # verbose
+uv run pytest tests/test_server.py  # server + SSE tests
+```
+
+---
+
+## Project structure
+
+```
+simulateur/
+  flairsim/                  # Main package
+    __init__.py              # Public API exports
+    map/                     # GeoTIFF tile loading and spatial queries
+      modality.py            # Modality enum (AERIAL_RGBI, DEM, SPOT, ...)
+      tile_loader.py         # TileInfo, TileData, read_tile()
+      map_manager.py         # MapManager, MapBounds
+    drone/                   # Drone state, physics, camera
+      drone.py               # Drone, DroneConfig, DroneState
+      camera.py              # CameraModel, CameraConfig
+      telemetry.py           # FlightLog, TelemetryRecord
+    core/                    # Simulator engine
+      action.py              # Action, ActionType (MOVE / FOUND / STOP)
+      observation.py         # Observation, EpisodeResult
+      simulator.py           # FlairSimulator, SimulatorConfig
+    server/                  # HTTP REST API + SSE
+      __main__.py            # `python -m flairsim.server`
+      app.py                 # FastAPI app factory, routes, SSE broadcast
+      cli.py                 # CLI argument parsing
+    viewer/                  # Desktop visualization (pygame, 3 modes)
+      __main__.py            # `python -m flairsim.viewer`
+      viewer.py              # FlairViewer, keyboard controls, remote modes
+      remote.py              # ViewerObservation adapter (local ↔ server)
+      minimap.py             # Minimap overlay
+      hud.py                 # HUD overlay
+  tests/                     # 268 tests
+  docs/                      # Technical documentation
+  pyproject.toml             # Package config (uv/hatchling)
+```
+
+---
+
+## Documentation
+
+Detailed documentation is in the `docs/` directory:
+
+| File | Content |
+|------|---------|
+| [docs/api.md](docs/api.md) | Complete API reference (all classes, methods, server endpoints, SSE) |
+| [docs/architecture.md](docs/architecture.md) | Module architecture, data flow, SSE design, rationale |
+| [docs/contributing.md](docs/contributing.md) | Development setup, tests, code style, project structure |
+
+When the server is running, interactive API documentation (Swagger UI) is
+also available at `http://127.0.0.1:8000/docs`.
+
+---
+
+## References
+
+1. **FLAIR-HUB** -- Music, A. et al. (2025). *FLAIR-HUB: A large-scale multimodal
+   dataset for land-cover mapping.* arXiv:2506.07080.
+
+2. **FlySearch** -- Majumdar, A. et al. (2025). *FlySearch: A benchmark for evaluating
+   VLM exploration capabilities with a UAV.* NeurIPS 2025. arXiv:2506.02896.
+
+---
+
+## License
+
+MIT
