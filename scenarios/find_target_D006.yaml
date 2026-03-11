@@ -1,0 +1,25 @@
+# Example scenario: Find a target in D006 (Isère), ROI UU-S2-1
+# This scenario uses FLAIR-HUB_TOY data.
+
+scenario_id: find_target_D006
+name: Find target in Isère
+description: >
+  Navigate over the Isère department (D006) aerial imagery to locate
+  a specific ground target.  The drone starts at the northern edge of
+  the ROI and must fly south to find the target.
+
+dataset:
+  data_dir: FLAIR-HUB_TOY/D006-2020_AERIAL_RGBI
+  roi: UU-S2-1
+
+start:
+  x: 1018422.0
+  y: 6278750.0
+  z: 150.0
+
+target:
+  x: 1018300.0
+  y: 6278200.0
+  radius: 50.0
+
+max_steps: 200

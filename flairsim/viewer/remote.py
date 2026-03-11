@@ -32,6 +32,50 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _bands_to_rgb(
+    image: np.ndarray,
+    normalize_fn: Any,
+) -> np.ndarray:
+    """Convert a (bands, H, W) array to (H, W, 3) uint8 RGB.
+
+    Non-uint8 data is normalised using *normalize_fn* (expected to
+    be ``normalize_to_uint8`` from tile_loader).
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input with shape ``(bands, H, W)``.
+    normalize_fn : callable
+        Normalisation function ``(ndarray) -> ndarray[uint8]``.
+
+    Returns
+    -------
+    np.ndarray
+        ``(H, W, 3)`` uint8 RGB array.
+    """
+    if image.dtype != np.uint8:
+        image = normalize_fn(image)
+
+    if image.ndim == 3 and image.shape[0] >= 3:
+        return np.transpose(image[:3], (1, 2, 0)).copy()
+    elif image.ndim == 3 and image.shape[0] == 2:
+        # Two bands (e.g. DEM DSM+DTM): show first band as greyscale.
+        band = image[0]
+        return np.stack([band, band, band], axis=-1)
+    elif image.ndim == 3 and image.shape[0] == 1:
+        band = image[0]
+        return np.stack([band, band, band], axis=-1)
+    elif image.ndim == 2:
+        return np.stack([image, image, image], axis=-1)
+    else:
+        return image
+
+
+# ---------------------------------------------------------------------------
 # Lightweight sub-structures
 # ---------------------------------------------------------------------------
 
@@ -100,6 +144,11 @@ class ViewerObservation:
         Ground sampling distance (m/px).
     result : ViewerEpisodeResult or None
         Episode outcome (set only when ``done=True``).
+    metadata : dict
+        Arbitrary metadata from the observation (e.g. scenario info).
+    images_rgb : dict[str, np.ndarray]
+        Per-modality ``(H, W, 3)`` uint8 RGB images, keyed by modality
+        name (e.g. ``"AERIAL_RGBI"``).  Empty in single-modality mode.
     """
 
     image_rgb: np.ndarray = field(repr=False)
@@ -109,6 +158,8 @@ class ViewerObservation:
     ground_footprint: float = 0.0
     ground_resolution: float = 0.0
     result: Optional[ViewerEpisodeResult] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    images_rgb: Dict[str, np.ndarray] = field(default_factory=dict, repr=False)
 
     # ---------------------------------------------------------------- factories
 
@@ -125,12 +176,19 @@ class ViewerObservation:
         -------
         ViewerObservation
         """
+        from ..map.tile_loader import normalize_to_uint8
+
         result = None
         if obs.result is not None:
             result = ViewerEpisodeResult(
                 success=obs.result.success,
                 reason=obs.result.reason,
             )
+
+        # Build per-modality RGB images.
+        images_rgb: Dict[str, np.ndarray] = {}
+        for mod_name, mod_image in obs.images.items():
+            images_rgb[mod_name] = _bands_to_rgb(mod_image, normalize_to_uint8)
 
         return cls(
             image_rgb=obs.image_rgb(),
@@ -145,6 +203,8 @@ class ViewerObservation:
             ground_footprint=obs.ground_footprint,
             ground_resolution=obs.ground_resolution,
             result=result,
+            metadata=dict(obs.metadata),
+            images_rgb=images_rgb,
         )
 
     @classmethod
@@ -184,6 +244,13 @@ class ViewerObservation:
                 reason=data["result"]["reason"],
             )
 
+        # Decode per-modality images.
+        images_rgb: Dict[str, np.ndarray] = {}
+        for mod_name, b64_str in data.get("images", {}).items():
+            mod_bytes = base64.b64decode(b64_str)
+            mod_pil = Image.open(io.BytesIO(mod_bytes)).convert("RGB")
+            images_rgb[mod_name] = np.asarray(mod_pil, dtype=np.uint8)
+
         return cls(
             image_rgb=image_rgb,
             drone_state=drone_state,
@@ -192,4 +259,6 @@ class ViewerObservation:
             ground_footprint=data["ground_footprint"],
             ground_resolution=data["ground_resolution"],
             result=result,
+            metadata=data.get("metadata", {}),
+            images_rgb=images_rgb,
         )

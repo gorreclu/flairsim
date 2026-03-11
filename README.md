@@ -9,7 +9,7 @@ a **local HTTP API** so that any external program (VLM agent, notebook,
 another language) can pilot the drone and receive observations (image +
 telemetry).
 
-> **Academic context** -- *Fil rouge* for the
+> **Academic context** -- *Fil rouge* (capstone project) for the
 > Mastere Specialise Big Data / IA at Telecom Paris.
 
 ---
@@ -19,13 +19,15 @@ telemetry).
 | Feature | Description |
 |---------|-------------|
 | **Real aerial imagery** | Flies over 0.2 m/px IGN orthophotos (FLAIR-HUB D004, D005, ...) |
+| **Multi-modality** | Auto-discovers and loads all available modalities (RGBI, DEM, SPOT, Sentinel-1/2, labels) from a parent directory. Tab key cycles between them in the viewer |
+| **Predefined scenarios** | YAML-based mission scenarios with start position, target location, acceptance radius, and automatic success/failure evaluation |
+| **Grid overlay (SoM/Scaffold)** | NxN alphanumeric grid overlay (A1, B2, ...) for VLM spatial prompting, inspired by Set-of-Mark and Scaffold prompting research |
 | **HTTP REST API** | Local server on `localhost:8000`. Any program can send actions and receive image + telemetry via HTTP |
 | **CLI to launch** | `flairsim-server --data-dir path/to/data` -- one command to start |
 | **Interactive viewer** | Pygame-based desktop viewer with HUD, minimap, and three modes (local / observe / fly) |
 | **SSE push channel** | `GET /events` streams observations to observer viewers in real time |
 | **Telemetry logging** | Full flight log with position, displacement, clipping info |
-| **Multi-modality ready** | Architecture supports AERIAL_RGBI, DEM, SPOT, Sentinel-1/2 |
-| **Well tested** | 268 tests (unit + integration + server + SSE), all passing |
+| **Well tested** | 428 tests (unit + integration + server + SSE), all passing |
 
 ---
 
@@ -33,9 +35,9 @@ telemetry).
 
 ```
 flairsim/
-  map/           # GeoTIFF tile loading, spatial queries (MapManager, TileLoader, Modality)
-  drone/         # Drone state & physics, camera model, telemetry (Drone, CameraModel, FlightLog)
-  core/          # Simulator engine, actions, observations (FlairSimulator, Action, Observation)
+  map/           # GeoTIFF tile loading, spatial queries, modality discovery
+  drone/         # Drone state & physics, camera model, telemetry
+  core/          # Simulator engine, actions, observations, scenarios, grid overlay
   server/        # HTTP REST API (FastAPI) -- the interface for external agents
   viewer/        # Pygame real-time visualization (FlairViewer, HUD, Minimap)
 ```
@@ -52,18 +54,22 @@ FlairSim HTTP Server (localhost:8000)
     v
 FlairSimulator.step()
     |-- Drone.move()            (apply displacement, clamp to bounds)
-    |-- CameraModel.capture()   (extract image from map tiles)
+    |-- CameraModel.capture()   (extract image from map tiles, all modalities)
     |-- FlightLog.record()      (log telemetry)
+    |-- Scenario.evaluate()     (check target proximity, if scenario active)
+    |-- GridOverlay.draw()      (annotate image with grid, if enabled)
     |
     v
 JSON response:
     {
       "step": 42,
       "done": false,
-      "image_base64": "<PNG in base64>",
+      "image_base64": "<PNG in base64, with optional grid overlay>",
+      "images": {"AERIAL_RGBI": "<base64>", "DEM_ELEV": "<base64>", ...},
       "drone_state": {"x": ..., "y": ..., "z": ..., ...},
       "ground_footprint": 200.0,
-      "ground_resolution": 0.4
+      "ground_resolution": 0.4,
+      "metadata": {"scenario_name": "...", "distance_to_target": "42.5", ...}
     }
 ```
 
@@ -74,7 +80,7 @@ JSON response:
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) >= 0.4
-- FLAIR-HUB data (at least one `D0xx_AERIAL_RGBI` directory)
+- FLAIR-HUB data (at least one `D0xx_AERIAL_RGBI` directory, or a parent directory with multiple modalities)
 
 ### Install
 
@@ -89,7 +95,7 @@ uv sync --all-extras
 
 | Group | Install command | Packages |
 |-------|-----------------|----------|
-| Core | `uv sync` | numpy, rasterio, Pillow |
+| Core | `uv sync` | numpy, rasterio, Pillow, pyyaml |
 | Server | `uv sync --extra server` | + fastapi, uvicorn, sse-starlette |
 | Viewer | `uv sync --extra viewer` | + pygame |
 | Dev | `uv sync --dev` | + pytest, pytest-asyncio, ruff, httpx |
@@ -102,8 +108,21 @@ uv sync --all-extras
 ### 1. Start the simulator server
 
 ```bash
-# Recommended (works everywhere)
+# Basic: single modality directory
 uv run python -m flairsim.server --data-dir path/to/D004-2021_AERIAL_RGBI
+
+# Multi-modality: parent directory (auto-discovers all modalities)
+uv run python -m flairsim.server --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+
+# With scenarios
+uv run python -m flairsim.server \
+    --data-dir path/to/data \
+    --scenarios-dir scenarios/ \
+    --data-root /data/FLAIR-HUB \
+    --scenario find_target_D006
+
+# With grid overlay (4x4 grid)
+uv run python -m flairsim.server --data-dir path/to/data --grid 4
 
 # Or via the installed console script (after `pip install flairsim[server]`)
 flairsim-server --data-dir path/to/D004-2021_AERIAL_RGBI
@@ -131,6 +150,10 @@ uv run python -m flairsim.server --data-dir <PATH> [OPTIONS]
   --image-size    Camera output resolution in px (default: 500)
   --fov           Camera FOV in degrees (default: 90)
   --no-preload    Don't preload tiles (saves RAM)
+  --scenarios-dir Directory containing scenario YAML files
+  --data-root     Root for resolving relative scenario data_dir paths
+  --scenario      Scenario ID to load at startup
+  --grid N        Enable NxN grid overlay (overridable per-request via ?grid=N)
   -v              Debug logging
 ```
 
@@ -144,19 +167,30 @@ import base64
 
 client = httpx.Client(base_url="http://127.0.0.1:8000")
 
-# Start an episode
+# Start an episode (free flight)
 obs = client.post("/reset").json()
+
+# Start with a scenario
+obs = client.post("/reset", json={"scenario_id": "find_target_D006"}).json()
+
+# Enable a 4x4 grid overlay
+obs = client.post("/reset?grid=4").json()
+
 print(f"Drone at ({obs['drone_state']['x']:.0f}, {obs['drone_state']['y']:.0f})")
 
 # Fly the drone
 while not obs["done"]:
     obs = client.post("/step", json={"dx": 10.0, "dy": 0.0, "dz": -2.0}).json()
 
-    # Decode the image (PNG base64 -> bytes)
+    # Decode the primary image (PNG base64 -> bytes)
     image_bytes = base64.b64decode(obs["image_base64"])
 
-    # Use obs["drone_state"], obs["ground_footprint"], obs["ground_resolution"]
-    # to make decisions
+    # Access per-modality images (multi-modality mode)
+    for mod_name, mod_b64 in obs["images"].items():
+        mod_bytes = base64.b64decode(mod_b64)
+
+    # Use obs["drone_state"], obs["ground_footprint"], obs["ground_resolution"],
+    # obs["metadata"]["distance_to_target"] to make decisions
 
 # Check result
 if obs["done"]:
@@ -169,10 +203,20 @@ This also works from **any language** -- curl, JavaScript, Go, etc.:
 # Start episode
 curl -X POST http://127.0.0.1:8000/reset
 
+# Start with scenario and grid overlay
+curl -X POST "http://127.0.0.1:8000/reset?grid=4" \
+  -H "Content-Type: application/json" \
+  -d '{"scenario_id": "find_target_D006"}'
+
 # Move drone
 curl -X POST http://127.0.0.1:8000/step \
   -H "Content-Type: application/json" \
   -d '{"dx": 10, "dy": 5, "dz": 0}'
+
+# Declare target found
+curl -X POST http://127.0.0.1:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"dx": 0, "dy": 0, "dz": 0, "action_type": "found"}'
 
 # Get current state
 curl http://127.0.0.1:8000/state
@@ -183,6 +227,9 @@ curl http://127.0.0.1:8000/telemetry
 # Get config / map info
 curl http://127.0.0.1:8000/config
 
+# List available scenarios
+curl http://127.0.0.1:8000/scenarios
+
 # Subscribe to SSE observation stream (stays open)
 curl -N http://127.0.0.1:8000/events
 ```
@@ -191,17 +238,24 @@ curl -N http://127.0.0.1:8000/events
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/reset` | POST | Start a new episode. Body (optional): `{"x", "y", "z"}` |
-| `/step` | POST | Send an action. Body: `{"dx", "dy", "dz", "action_type"}` |
+| `/reset` | POST | Start a new episode. Body (optional): `{"x", "y", "z", "scenario_id"}`. Query: `?grid=N` |
+| `/step` | POST | Send an action. Body: `{"dx", "dy", "dz", "action_type"}`. Query: `?grid=N` |
 | `/state` | GET | Current drone state (no simulation advance) |
 | `/telemetry` | GET | Full flight log for current episode |
-| `/config` | GET | Simulator config, map bounds, drone/camera params |
+| `/config` | GET | Simulator config, map bounds, drone/camera params, active scenario |
+| `/scenarios` | GET | List available scenarios (requires `--scenarios-dir`) |
 | `/events` | GET | Server-Sent Events stream (observations pushed on reset/step) |
 
 **Action types** for `/step`:
 - `"move"` (default) -- move the drone by (dx, dy, dz) metres
-- `"found"` -- declare target found (ends episode)
+- `"found"` -- declare target found (ends episode; success depends on proximity to target if scenario active)
 - `"stop"` -- voluntarily end episode
+
+**Grid overlay** (`?grid=N` query parameter):
+- Available on `/reset` and `/step`
+- `?grid=4` enables a 4x4 grid on all subsequent images
+- `?grid=0` disables the grid
+- The grid persists across requests until changed
 
 ### 4. Interactive viewer (pygame)
 
@@ -213,7 +267,14 @@ Fly the drone manually with keyboard controls, using a local simulator
 (no server needed):
 
 ```bash
+# Single modality
 uv run python -m flairsim.viewer --data-dir path/to/D004-2021_AERIAL_RGBI
+
+# Multi-modality (auto-discovers all modalities)
+uv run python -m flairsim.viewer --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+
+# With grid overlay
+uv run python -m flairsim.viewer --data-dir path/to/data --grid 4
 ```
 
 #### Observer mode
@@ -256,12 +317,102 @@ uv run python -m flairsim.viewer --mode fly --server-url http://127.0.0.1:8000
 | R | Reset episode |
 | H | Toggle HUD |
 | M | Toggle minimap |
+| Tab | Cycle modality (multi-modality mode) |
+| G | Toggle grid overlay (default 4x4, or `--grid N`) |
 | Escape | Quit |
 
-**Options:** `--window-size`, `--move-step`, `--altitude`, `--roi`, etc.
+**Options:** `--window-size`, `--move-step`, `--altitude`, `--roi`, `--grid`, etc.
 Run `uv run python -m flairsim.viewer --help` for the full list.
 
-### 5. Observation response format
+### 5. Predefined scenarios
+
+Scenarios are YAML files that define complete missions:
+
+```yaml
+scenario_id: find_target_D006
+name: Find target in Isere
+description: >
+  Navigate over the Isere department (D006) aerial imagery to locate
+  a specific ground target.
+
+dataset:
+  data_dir: FLAIR-HUB_TOY/D006-2020_AERIAL_RGBI
+  roi: UU-S2-1
+
+start:
+  x: 1018422.0
+  y: 6278750.0
+  z: 150.0
+
+target:
+  x: 1018300.0
+  y: 6278200.0
+  radius: 50.0
+
+max_steps: 200
+```
+
+**Fields**:
+- `scenario_id` -- Unique ID (must match the YAML filename stem)
+- `dataset.data_dir` -- Path to data (absolute or relative to `--data-root`)
+- `dataset.roi` -- ROI to load (`null` = auto-select)
+- `start` -- Drone starting position (`null` values use map centre / default altitude)
+- `target` -- Target position with acceptance `radius` in metres
+- `max_steps` -- Episode length limit
+
+**Evaluation**: When the agent declares FOUND, the simulator checks if the
+drone is within `target.radius` metres of `(target.x, target.y)`. If yes,
+`result.success = True`; otherwise `result.success = False`.
+
+The viewer HUD shows the active scenario name and distance to target.
+The minimap displays a crosshair marker at the target location.
+
+### 6. Multi-modality
+
+FlairSim auto-detects whether `--data-dir` points to a single modality
+directory or a parent directory containing multiple modalities:
+
+```
+# Single modality (backward-compatible)
+--data-dir path/to/D006-2020_AERIAL_RGBI
+
+# Multi-modality (auto-discovers all sub-directories)
+--data-dir path/to/FLAIR-HUB_TOY/D006-2018/
+  -> discovers: AERIAL_RGBI, DEM_ELEV, SPOT_RGBI, SENTINEL2_TS, ...
+```
+
+In multi-modality mode:
+- The primary modality (AERIAL_RGBI preferred) is used for the main `image` field
+- All modalities are returned in `obs.images` (dict keyed by modality name)
+- The server returns per-modality PNG images in `response.images`
+- The viewer lets you cycle through modalities with Tab
+
+### 7. Grid overlay for VLMs
+
+The grid overlay divides the camera image into an NxN grid with
+alphanumeric cell labels (A1, A2, B1, B2, ...) following the
+**Set-of-Mark** (arXiv:2310.11441) and **Scaffold** (arXiv:2402.12058)
+prompting approaches.
+
+This enables VLMs to reference specific image regions using short
+labels instead of pixel coordinates:
+
+```python
+from flairsim import GridOverlay
+
+overlay = GridOverlay(n=4)                          # 4x4 grid
+annotated = overlay.draw(image_rgb)                 # (H,W,3) -> (H,W,3) with grid
+bounds = overlay.cell_bounds("B3", w, h)            # -> (x_min, y_min, x_max, y_max)
+center = overlay.cell_center("B3", w, h)            # -> (px_x, px_y)
+label = overlay.cell_from_pixel(120, 300, w, h)     # -> "B3"
+```
+
+**Integration points**:
+- **Server API**: `?grid=N` query parameter on `/reset` and `/step`
+- **Viewer**: `--grid N` CLI flag + G key toggle
+- **Programmatic**: `GridOverlay` class in `flairsim.core.grid`
+
+### 8. Observation response format
 
 ```json
 {
@@ -277,19 +428,30 @@ Run `uv run python -m flairsim.viewer --help` for the full list.
   },
   "ground_footprint": 200.0,
   "ground_resolution": 0.4,
-  "image_base64": "<base64 PNG>",
+  "image_base64": "<base64 PNG, with grid overlay if enabled>",
   "image_width": 500,
   "image_height": 500,
+  "images": {
+    "AERIAL_RGBI": "<base64 PNG>",
+    "DEM_ELEV": "<base64 PNG>",
+    "SPOT_RGBI": "<base64 PNG>"
+  },
   "result": null,
-  "metadata": {}
+  "metadata": {
+    "roi": "UU-S2-1",
+    "primary_modality": "AERIAL_RGBI",
+    "modalities": "['AERIAL_RGBI', 'DEM_ELEV', 'SPOT_RGBI']",
+    "scenario_name": "Find target in Isere",
+    "distance_to_target": "42.5"
+  }
 }
 ```
 
 When `done=true`, the `result` field contains:
 ```json
 {
-  "success": false,
-  "reason": "Agent declared FOUND (no target configured for evaluation).",
+  "success": true,
+  "reason": "Agent declared FOUND within 42.5 m of target (radius: 50.0 m).",
   "steps_taken": 42,
   "distance_travelled": 523.4
 }
@@ -302,21 +464,50 @@ When `done=true`, the `result` field contains:
 FlairSim uses the [FLAIR-HUB](https://arxiv.org/abs/2506.07080) dataset published by
 IGN (Institut national de l'information geographique et forestiere).
 
+### Supported modalities
+
+| Modality | Suffix | Resolution | Bands | Type |
+|----------|--------|------------|-------|------|
+| AERIAL_RGBI | `AERIAL_RGBI` | 0.2 m/px | 4 (RGBI) | uint8 |
+| AERIAL_RLT_PAN | `AERIAL-RLT_PAN` | 0.4 m/px | 1 (PAN) | uint8 |
+| DEM_ELEV | `DEM_ELEV` | 0.2 m/px | 2 (DSM+DTM) | float32 |
+| SPOT_RGBI | `SPOT_RGBI` | 1.6 m/px | 4 (RGBI) | uint16 |
+| SENTINEL1_ASC_TS | `SENTINEL1-ASC_TS` | 10.24 m/px | 2 (VV,VH) | float32, TS |
+| SENTINEL1_DESC_TS | `SENTINEL1-DESC_TS` | 10.24 m/px | 2 (VV,VH) | float32, TS |
+| SENTINEL2_TS | `SENTINEL2_TS` | 10.24 m/px | 10 | uint16, TS |
+| LABEL_COSIA | `AERIAL_LABEL-COSIA` | 0.2 m/px | 1 | uint8 |
+| LABEL_LPIS | `ALL_LABEL-LPIS` | 0.2 m/px | 3 | uint8 |
+| SENTINEL2_MSK_SC | `SENTINEL2_MSK-SC` | 10.24 m/px | 2 | uint16, TS |
+
+All modalities cover exactly 102.4m x 102.4m per patch.
+
 ### Data structure
 
 ```
+# Single modality
 D004-2021_AERIAL_RGBI/
   ROI_0001/
     D004_AERIAL_RGBI_ROI_0001_000-000.tif
     D004_AERIAL_RGBI_ROI_0001_000-001.tif
     ...
-  ROI_0002/
+
+# Parent directory (multi-modality)
+FLAIR-HUB_TOY/D006-2018/
+  D006-2018_AERIAL_RGBI/
+    UU-S2-1/
+      D006_AERIAL_RGBI_UU-S2-1_000-000.tif
+      ...
+  D006-2018_DEM_ELEV/
+    UU-S2-1/
+      D006_DEM_ELEV_UU-S2-1_000-000.tif
+      ...
+  D006-2018_SPOT_RGBI/
     ...
 ```
 
 Each patch is a 512 x 512 pixel GeoTIFF in EPSG:2154 (Lambert-93) covering
-102.4m x 102.4m at 0.2 m/px.  Patches within a ROI form a contiguous grid
-that the simulator stitches into a seamless flyable map.
+102.4m x 102.4m at 0.2 m/px (for AERIAL_RGBI).  Patches within a ROI form
+a contiguous grid that the simulator stitches into a seamless flyable map.
 
 ---
 
@@ -339,9 +530,12 @@ Formula: `footprint = 2 * altitude * tan(FOV/2)`, GSD = footprint / image_size.
 ## Running the tests
 
 ```bash
-uv run pytest            # 268 tests, ~5s
+uv run pytest            # 428 tests, ~5s
 uv run pytest -v         # verbose
 uv run pytest tests/test_server.py  # server + SSE tests
+uv run pytest tests/test_grid.py    # grid overlay tests
+uv run pytest tests/test_multimodality.py  # multi-modality tests
+uv run pytest tests/test_scenario.py       # scenario tests
 ```
 
 ---
@@ -351,10 +545,10 @@ uv run pytest tests/test_server.py  # server + SSE tests
 ```
 simulateur/
   flairsim/                  # Main package
-    __init__.py              # Public API exports
+    __init__.py              # Public API exports (22 symbols)
     map/                     # GeoTIFF tile loading and spatial queries
-      modality.py            # Modality enum (AERIAL_RGBI, DEM, SPOT, ...)
-      tile_loader.py         # TileInfo, TileData, read_tile()
+      modality.py            # Modality enum + discover_modalities(), pick_primary_modality()
+      tile_loader.py         # TileInfo, TileData, read_tile(), normalize_to_uint8()
       map_manager.py         # MapManager, MapBounds
     drone/                   # Drone state, physics, camera
       drone.py               # Drone, DroneConfig, DroneState
@@ -364,6 +558,8 @@ simulateur/
       action.py              # Action, ActionType (MOVE / FOUND / STOP)
       observation.py         # Observation, EpisodeResult
       simulator.py           # FlairSimulator, SimulatorConfig
+      scenario.py            # Scenario, ScenarioLoader, ScenarioTarget
+      grid.py                # GridOverlay, GridConfig (SoM/Scaffold prompting)
     server/                  # HTTP REST API + SSE
       __main__.py            # `python -m flairsim.server`
       app.py                 # FastAPI app factory, routes, SSE broadcast
@@ -371,10 +567,13 @@ simulateur/
     viewer/                  # Desktop visualization (pygame, 3 modes)
       __main__.py            # `python -m flairsim.viewer`
       viewer.py              # FlairViewer, keyboard controls, remote modes
-      remote.py              # ViewerObservation adapter (local ↔ server)
-      minimap.py             # Minimap overlay
-      hud.py                 # HUD overlay
-  tests/                     # 268 tests
+      remote.py              # ViewerObservation adapter (local <-> server)
+      minimap.py             # Minimap overlay (with target marker)
+      hud.py                 # HUD overlay (with scenario info)
+  scenarios/                 # Scenario YAML files
+    find_target_D006.yaml    # Example scenario
+    quick_explore_D012.yaml  # Example scenario
+  tests/                     # 428 tests (13 files)
   docs/                      # Technical documentation
   pyproject.toml             # Package config (uv/hatchling)
 ```
@@ -388,7 +587,7 @@ Detailed documentation is in the `docs/` directory:
 | File | Content |
 |------|---------|
 | [docs/api.md](docs/api.md) | Complete API reference (all classes, methods, server endpoints, SSE) |
-| [docs/architecture.md](docs/architecture.md) | Module architecture, data flow, SSE design, rationale |
+| [docs/architecture.md](docs/architecture.md) | Module architecture, data flow, multi-modality, scenarios, grid overlay |
 | [docs/contributing.md](docs/contributing.md) | Development setup, tests, code style, project structure |
 
 When the server is running, interactive API documentation (Swagger UI) is
@@ -403,6 +602,12 @@ also available at `http://127.0.0.1:8000/docs`.
 
 2. **FlySearch** -- Majumdar, A. et al. (2025). *FlySearch: A benchmark for evaluating
    VLM exploration capabilities with a UAV.* NeurIPS 2025. arXiv:2506.02896.
+
+3. **Set-of-Mark** -- Yang, J. et al. (2023). *Set-of-Mark prompting unleashes
+   extraordinary visual grounding in GPT-4V.* arXiv:2310.11441.
+
+4. **Scaffold** -- Lei, L. et al. (2024). *Scaffolding coordinates to promote
+   vision-language coordination in large multi-modal models.* arXiv:2402.12058.
 
 ---
 

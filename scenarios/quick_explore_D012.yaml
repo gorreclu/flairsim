@@ -1,0 +1,25 @@
+# Example scenario: Quick exploration in D012
+# A shorter scenario with a nearby target for testing.
+
+scenario_id: quick_explore_D012
+name: Quick exploration in D012
+description: >
+  A short exploration mission over the D012 (Aveyron) dataset.
+  The target is relatively close to the start position, making this
+  a good scenario for testing and debugging.
+
+dataset:
+  data_dir: FLAIR-HUB_TOY/D012-2019_AERIAL_RGBI
+  roi: null  # auto-select largest ROI
+
+start:
+  x: null   # use map centre
+  y: null
+  z: 100.0
+
+target:
+  x: 1018400.0
+  y: 6278400.0
+  radius: 30.0
+
+max_steps: 100

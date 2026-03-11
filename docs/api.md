@@ -15,11 +15,14 @@ from flairsim import (
     CameraConfig, CameraModel,
     Drone, DroneConfig, DroneState,
     EpisodeResult, FlairSimulator, FlightLog,
+    GridConfig, GridOverlay,
     MapBounds, MapManager,
     Modality, ModalitySpec,
     Observation,
+    Scenario, ScenarioLoader, ScenarioTarget,
     SimulatorConfig,
     TelemetryRecord,
+    discover_modalities, pick_primary_modality,
 )
 ```
 
@@ -96,14 +99,30 @@ Simulator output returned by `reset()` and `step()`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `image` | `np.ndarray` | Camera image, shape `(bands, H, W)`, typically `uint8` |
+| `image` | `np.ndarray` | Camera image for the *primary* modality, shape `(bands, H, W)` |
 | `drone_state` | `DroneState` | Current position and counters |
 | `step` | `int` | Current step number (0 on `reset()`) |
 | `done` | `bool` | `True` if episode has ended |
 | `result` | `EpisodeResult \| None` | Set only when `done=True` |
 | `ground_footprint` | `float` | Camera footprint side length (metres) |
 | `ground_resolution` | `float` | Ground sampling distance (m/px) |
-| `metadata` | `dict` | Extra info (ROI, data_dir, max_steps, ...) |
+| `metadata` | `dict` | Extra info (ROI, data_dir, max_steps, scenario info, modalities, ...) |
+| `images` | `dict[str, np.ndarray]` | Per-modality images keyed by name (e.g. `"AERIAL_RGBI"`, `"DEM_ELEV"`). Each `(bands, H, W)`. Empty in legacy single-modality mode. |
+
+**Metadata keys** (when applicable):
+
+| Key | Description |
+|-----|-------------|
+| `roi` | Loaded ROI name |
+| `data_dir` | Path to the data directory |
+| `max_steps` | Episode step limit |
+| `primary_modality` | Name of the primary modality |
+| `modalities` | List of all loaded modality names |
+| `scenario_id` | Active scenario ID (if scenario mode) |
+| `scenario_name` | Active scenario name |
+| `distance_to_target` | Distance from drone to target (metres) |
+| `target_x`, `target_y` | Target coordinates |
+| `target_radius` | Acceptance radius |
 
 **Properties**:
 
@@ -145,19 +164,23 @@ Main simulation engine.
 FlairSimulator(
     data_dir: str | Path,
     config: SimulatorConfig | None = None,
+    scenario: Scenario | None = None,
 )
 ```
 
 | Parameter | Description |
 |-----------|-------------|
-| `data_dir` | Path to FLAIR-HUB data directory (e.g. `D004-2021_AERIAL_RGBI`) |
+| `data_dir` | Path to FLAIR-HUB data directory. Can be a single-modality dir (e.g. `D004-2021_AERIAL_RGBI`) or a parent dir with multiple modality sub-dirs. |
 | `config` | Full configuration. `None` uses defaults. |
+| `scenario` | Predefined mission scenario. `None` = free-flight mode. |
 
 **Attributes (public)**:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `map_manager` | `MapManager` | The loaded map |
+| `map_manager` | `MapManager` | The loaded map for the primary modality |
+| `map_managers` | `dict[str, MapManager]` | All loaded maps, keyed by modality name |
+| `primary_modality` | `str \| None` | Name of the primary modality (e.g. `"AERIAL_RGBI"`) |
 | `drone` | `Drone` | The simulated drone |
 | `camera` | `CameraModel` | The nadir camera |
 | `flight_log` | `FlightLog` | Telemetry log for current episode |
@@ -166,7 +189,7 @@ FlairSimulator(
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `reset(x, y, z)` | `Observation` | Start a new episode. `None` args default to map centre / default altitude |
+| `reset(x, y, z)` | `Observation` | Start a new episode. `None` args default to scenario start / map centre / default altitude |
 | `step(action)` | `Observation` | Advance one step. Raises `RuntimeError` if episode ended. |
 | `close()` | `None` | Release resources (currently no-op, reserved for future) |
 | `random_start_position(rng, margin)` | `(float, float)` | Generate random `(x, y)` within map bounds |
@@ -179,6 +202,145 @@ FlairSimulator(
 | `step_count` | `int` | Current step number |
 | `max_steps` | `int` | Maximum steps per episode |
 | `map_bounds` | `MapBounds` | Spatial extent of loaded map |
+| `scenario` | `Scenario \| None` | The active scenario, or `None` in free-flight mode |
+
+---
+
+### `Scenario` (frozen dataclass)
+
+A complete mission scenario. Loaded from YAML via `ScenarioLoader`.
+
+**Attributes**:
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `scenario_id` | `str` | -- | Unique identifier (YAML filename stem) |
+| `name` | `str` | -- | Short human-readable name |
+| `description` | `str` | `""` | Longer mission description |
+| `dataset` | `ScenarioDataset` | -- | Where to load map data from |
+| `start` | `ScenarioStart` | `ScenarioStart()` | Drone starting position |
+| `target` | `ScenarioTarget` | -- | What the agent must find |
+| `max_steps` | `int` | `500` | Episode step limit |
+
+**Methods**:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `evaluate(drone_x, drone_y)` | `bool` | `True` if drone is within target acceptance radius |
+| `distance_to_target(drone_x, drone_y)` | `float` | Distance from drone to target centre (metres) |
+| `to_dict()` | `dict` | Serialise to JSON-friendly dictionary |
+
+---
+
+### `ScenarioTarget` (frozen dataclass)
+
+Target location the agent must find.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `x` | `float` | -- | Target easting (metres) |
+| `y` | `float` | -- | Target northing (metres) |
+| `radius` | `float` | `50.0` | Acceptance radius (metres) |
+
+**Methods**: `distance_to(px, py) -> float`, `is_within(px, py) -> bool`
+
+---
+
+### `ScenarioLoader`
+
+Load and manage scenario YAML files from a directory.
+
+**Constructor**:
+
+```python
+ScenarioLoader(
+    scenarios_dir: str | Path,
+    data_root: str | Path | None = None,
+)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `scenarios_dir` | Directory containing `*.yaml` / `*.yml` scenario files |
+| `data_root` | Root directory for resolving relative `data_dir` paths. `None` = cwd |
+
+**Methods**:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get(scenario_id)` | `Scenario` | Load a scenario by its ID (filename stem) |
+| `list_ids()` | `list[str]` | Sorted list of available scenario IDs |
+| `list_scenarios()` | `list[Scenario]` | Load and return all scenarios |
+| `resolve_data_dir(scenario)` | `Path` | Resolve scenario's `data_dir` to an absolute path |
+
+**Properties**: `scenarios_dir -> Path`, `data_root -> Path`
+
+---
+
+### `GridOverlay`
+
+NxN grid overlay with alphanumeric cell labels for VLM prompting.
+
+**Constructor**:
+
+```python
+GridOverlay(n: int, config: GridConfig | None = None)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Grid size (rows = columns). Must be in `[1, 26]`. |
+| `config` | Visual parameters. `None` uses defaults. |
+
+**Properties**:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `n` | `int` | Grid size |
+| `config` | `GridConfig` | Visual configuration |
+| `cell_labels` | `list[str]` | All labels in row-major order (e.g. `['A1', 'A2', 'B1', 'B2']`) |
+
+**Methods**:
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `draw(image)` | `np.ndarray (H, W, 3)` | Draw grid on `(H, W, 3)` uint8 image. Returns a new array. |
+| `draw_on_surface(surface)` | `None` | Draw grid on a pygame Surface (in-place) |
+| `cell_bounds(label, w, h)` | `(x_min, y_min, x_max, y_max)` | Pixel bounding box of a cell |
+| `cell_center(label, w, h)` | `(px_x, px_y)` | Pixel centre of a cell |
+| `cell_from_pixel(px_x, px_y, w, h)` | `str` | Determine which cell a pixel falls in |
+
+**Example**:
+
+```python
+from flairsim import GridOverlay
+
+overlay = GridOverlay(n=4)
+
+# Draw on a camera image
+annotated = overlay.draw(image_rgb)  # (H, W, 3) uint8
+
+# Coordinate conversions
+bounds = overlay.cell_bounds("B3", 500, 500)  # (250, 125, 375, 250)
+center = overlay.cell_center("B3", 500, 500)  # (312, 187)
+label = overlay.cell_from_pixel(300, 180, 500, 500)  # "B3"
+```
+
+---
+
+### `GridConfig` (frozen dataclass)
+
+Visual parameters for the grid overlay.
+
+| Attribute | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `line_color` | `tuple[int, int, int]` | `(255, 255, 255)` | RGB colour of grid lines |
+| `line_alpha` | `float` | `0.6` | Line opacity (0.0-1.0) |
+| `line_width` | `int` | `2` | Line width in pixels |
+| `label_color` | `tuple[int, int, int]` | `(255, 255, 255)` | Label text colour |
+| `label_bg_color` | `tuple[int, int, int] \| None` | `(0, 0, 0)` | Label background colour. `None` = no background |
+| `label_bg_alpha` | `float` | `0.5` | Label background opacity |
+| `font_scale` | `float` | `1.0` | Relative font size (1.0 = auto-sized) |
 
 ---
 
@@ -383,6 +545,25 @@ All modalities cover exactly 102.4m x 102.4m per patch.
 
 ---
 
+### Modality discovery functions
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `discover_modalities(parent_dir)` | `dict[Modality, Path]` | Scan a parent directory for sub-dirs matching known modality suffixes |
+| `pick_primary_modality(modalities)` | `Modality` | Choose the primary modality from available ones (prefers AERIAL_RGBI) |
+| `is_single_modality_dir(data_dir)` | `bool` | Check if a directory contains tiles directly (single modality) vs. modality sub-dirs |
+
+**`discover_modalities` example**:
+
+```python
+from flairsim import discover_modalities, Modality
+
+mods = discover_modalities("FLAIR-HUB_TOY/D006-2018")
+# {Modality.AERIAL_RGBI: Path(...), Modality.DEM_ELEV: Path(...), ...}
+```
+
+---
+
 ### `MapBounds` (frozen dataclass)
 
 Axis-aligned bounding box in world coordinates (EPSG:2154, metres).
@@ -470,6 +651,12 @@ The viewer supports three modes:
 # Local mode (default) -- run a local simulator and fly manually
 uv run python -m flairsim.viewer --data-dir path/to/D004-2021_AERIAL_RGBI
 
+# Multi-modality local mode
+uv run python -m flairsim.viewer --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+
+# With grid overlay
+uv run python -m flairsim.viewer --data-dir path/to/data --grid 4
+
 # Observe mode -- watch a remote server's activity via SSE
 uv run python -m flairsim.viewer --mode observe --server-url http://localhost:8000
 
@@ -489,16 +676,17 @@ uv run python -m flairsim.viewer --mode fly --server-url http://localhost:8000
 | `--fov` | `90` | Camera FOV (degrees) (local mode) |
 | `--window-size` | `800` | Viewer window size (px) |
 | `--move-step` | `20` | Movement per key press (m) |
+| `--grid` | -- | Grid overlay size NxN (e.g. `--grid 4`). Press G to toggle. |
 | `--no-preload` | -- | Lazy tile loading (local mode) |
 | `-v` | -- | Debug logging |
 
 ### Viewer modes
 
-| Mode | Description | Keyboard | Data source |
-|------|-------------|----------|-------------|
-| `local` | Creates a local `FlairSimulator` and flies directly | Full controls | Local simulator |
-| `observe` | Connects to server via SSE, watches agent activity | View only (no drone control) | `GET /events` SSE stream |
-| `fly` | Connects to server, sends `POST /step` on keypresses | Full controls (via HTTP) | `POST /step`, `POST /reset` |
+| Mode | Flag | Description |
+|------|------|-------------|
+| **local** | `--mode local` | Creates a local `FlairSimulator`, flies directly. Default mode. |
+| **observe** | `--mode observe` | Connects to a running server via SSE (`GET /events`). Read-only: watches what an external agent does. No keyboard flight. |
+| **fly** | `--mode fly` | Connects to a running server, sends `POST /step` on keypresses, receives observation via HTTP response. |
 
 ### Keyboard controls
 
@@ -515,6 +703,8 @@ uv run python -m flairsim.viewer --mode fly --server-url http://localhost:8000
 | R | Reset episode | local, fly |
 | H | Toggle HUD | all |
 | M | Toggle minimap | all |
+| Tab | Cycle modality (multi-modality mode) | all |
+| G | Toggle grid overlay | all |
 | Escape | Quit | all |
 
 ### `ViewerConfig` (frozen dataclass)
@@ -531,6 +721,22 @@ uv run python -m flairsim.viewer --mode fly --server-url http://localhost:8000
 | `show_minimap` | `bool` | `True` | Show minimap initially |
 
 ### `FlairViewer`
+
+**Constructor**:
+
+```python
+FlairViewer(
+    config: ViewerConfig | None = None,
+    map_bounds: MapBounds | None = None,
+    grid: int | None = None,
+)
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `config` | Window and display settings |
+| `map_bounds` | Map extent for minimap |
+| `grid` | Grid overlay size NxN. `None` = no grid (toggle with G key). |
 
 | Method | Description |
 |--------|-------------|
@@ -559,6 +765,8 @@ server JSON format.
 | `ground_footprint` | `float` | Camera footprint (m) |
 | `ground_resolution` | `float` | Ground sampling distance (m/px) |
 | `result` | `ViewerEpisodeResult \| None` | Episode outcome |
+| `metadata` | `dict` | Arbitrary metadata (scenario info, modalities, ...) |
+| `images_rgb` | `dict[str, np.ndarray]` | Per-modality `(H, W, 3)` uint8 RGB images, keyed by modality name. Empty in single-modality mode. |
 
 **Factory methods**:
 
@@ -601,11 +809,14 @@ from flairsim.server import create_app
 
 app = create_app(
     data_dir="path/to/D004-2021_AERIAL_RGBI",
-    roi=None,            # auto-select largest ROI
+    roi=None,                # auto-select largest ROI
     max_steps=500,
-    drone_config=None,   # defaults
-    camera_config=None,  # defaults
+    drone_config=None,       # defaults
+    camera_config=None,      # defaults
     preload_tiles=True,
+    scenario_loader=None,    # ScenarioLoader or None
+    scenario_id=None,        # initial scenario ID or None
+    grid=None,               # grid overlay size or None
 )
 ```
 
@@ -617,6 +828,9 @@ app = create_app(
 | `drone_config` | `DroneConfig \| None` | `None` | Drone physical limits |
 | `camera_config` | `CameraConfig \| None` | `None` | Camera sensor params |
 | `preload_tiles` | `bool` | `True` | Load all tiles at startup |
+| `scenario_loader` | `ScenarioLoader \| None` | `None` | Loader for scenario YAML files |
+| `scenario_id` | `str \| None` | `None` | Initial scenario to load at startup |
+| `grid` | `int \| None` | `None` | Default grid overlay size NxN. Overridable per-request via `?grid=N`. |
 
 Returns a `FastAPI` instance ready to be served with uvicorn.
 
@@ -628,8 +842,13 @@ Returns a `FastAPI` instance ready to be served with uvicorn.
 # Recommended (works everywhere, including macOS editable installs)
 uv run python -m flairsim.server --data-dir path/to/D004-2021_AERIAL_RGBI
 
-# Or via the installed console script
-flairsim-server --data-dir path/to/D004-2021_AERIAL_RGBI
+# With scenarios and grid
+uv run python -m flairsim.server \
+    --data-dir path/to/data \
+    --scenarios-dir scenarios/ \
+    --data-root /data/FLAIR-HUB \
+    --scenario find_target_D006 \
+    --grid 4
 
 # With options
 uv run python -m flairsim.server \
@@ -652,14 +871,22 @@ Start a new episode.  Returns the initial observation.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `x` | `float \| null` | `null` | Start easting (m). `null` = map centre |
-| `y` | `float \| null` | `null` | Start northing (m). `null` = map centre |
-| `z` | `float \| null` | `null` | Start altitude (m). `null` = default |
+| `x` | `float \| null` | `null` | Start easting (m). `null` = scenario start or map centre |
+| `y` | `float \| null` | `null` | Start northing (m). `null` = scenario start or map centre |
+| `z` | `float \| null` | `null` | Start altitude (m). `null` = scenario start or default |
+| `scenario_id` | `str \| null` | `null` | Scenario to load. `null` = keep current scenario or free flight |
+
+**Query parameters**:
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `grid` | `int \| null` | Grid overlay size NxN. `0` disables. Persists across requests. |
 
 **Response**: `ObservationResponse` (see below).
 
 **Side effects**: Broadcasts the observation to all connected SSE
-subscribers (see `GET /events`).
+subscribers (see `GET /events`).  If `scenario_id` is set, a new
+`FlairSimulator` is created with the scenario's dataset.
 
 ---
 
@@ -675,6 +902,12 @@ Advance the simulation by one step.
 | `dy` | `float` | `0.0` | Northward displacement (m) |
 | `dz` | `float` | `0.0` | Upward displacement (m) |
 | `action_type` | `str` | `"move"` | `"move"`, `"found"`, or `"stop"` |
+
+**Query parameters**:
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `grid` | `int \| null` | Grid overlay size NxN. `0` disables. Persists across requests. |
 
 **Response**: `ObservationResponse`.
 
@@ -708,6 +941,16 @@ Get the full flight log for the current episode.
 Get simulator configuration and map information.
 
 **Response**: `ConfigResponse`.
+
+---
+
+#### `GET /scenarios`
+
+List all available scenarios.
+
+**Response**: `ScenariosListResponse`.
+
+Returns an empty list if no scenario loader is configured.
 
 ---
 
@@ -773,11 +1016,12 @@ curl -N http://127.0.0.1:8000/events
 | `drone_state` | `DroneStateResponse` | Current drone state |
 | `ground_footprint` | `float` | Camera footprint side length (m) |
 | `ground_resolution` | `float` | Ground sampling distance (m/px) |
-| `image_base64` | `str` | PNG-encoded image in base64 |
+| `image_base64` | `str` | PNG-encoded primary image in base64 (with grid overlay if enabled) |
 | `image_width` | `int` | Image width in pixels |
 | `image_height` | `int` | Image height in pixels |
 | `result` | `EpisodeResultResponse \| null` | Set only when `done=true` |
-| `metadata` | `dict` | Extra info (ROI, data_dir, ...) |
+| `metadata` | `dict` | Extra info (ROI, modalities, scenario, distance_to_target, ...) |
+| `images` | `dict[str, str]` | Per-modality PNG images in base64, keyed by modality name. Empty in single-modality mode. |
 
 #### `DroneStateResponse`
 
@@ -833,3 +1077,20 @@ curl -N http://127.0.0.1:8000/events
 | `camera` | `dict` | Camera config (fov_deg, image_size) |
 | `max_steps` | `int` | Max steps per episode |
 | `is_running` | `bool` | Whether an episode is active |
+| `scenario_id` | `str \| null` | Active scenario ID, or `null` in free-flight mode |
+
+#### `ScenariosListResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scenarios` | `list[ScenarioSummaryResponse]` | All available scenarios |
+
+#### `ScenarioSummaryResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scenario_id` | `str` | Scenario unique ID |
+| `name` | `str` | Short name |
+| `description` | `str` | Mission description |
+| `max_steps` | `int` | Episode step limit |
+| `target_radius` | `float` | Acceptance radius (m) |

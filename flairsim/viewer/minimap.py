@@ -51,8 +51,12 @@ class MinimapConfig:
         RGBA colour for the camera footprint rectangle.
     trail_color : tuple[int, int, int]
         Colour for the flight trajectory line.
+    target_color : tuple[int, int, int]
+        Colour for the scenario target marker.
     drone_radius : int
         Radius of the drone marker dot in pixels.
+    target_radius : int
+        Radius of the target marker dot in pixels.
     trail_width : int
         Width of the trajectory line in pixels.
     """
@@ -65,7 +69,9 @@ class MinimapConfig:
     drone_color: Tuple[int, int, int] = (255, 50, 50)
     footprint_color: Tuple[int, int, int, int] = (255, 255, 0, 80)
     trail_color: Tuple[int, int, int] = (100, 200, 255)
+    target_color: Tuple[int, int, int] = (50, 255, 50)
     drone_radius: int = 4
+    target_radius: int = 5
     trail_width: int = 1
 
 
@@ -93,6 +99,7 @@ class Minimap:
         self._bounds = map_bounds
         self._config = config or MinimapConfig()
         self._trail: List[Tuple[float, float]] = []
+        self._target: Optional[Tuple[float, float]] = None
 
     # ---------------------------------------------------------------- trail
 
@@ -109,6 +116,22 @@ class Minimap:
             World coordinates.
         """
         self._trail.append((x, y))
+
+    # ---------------------------------------------------------------- target
+
+    def set_target(self, x: float, y: float) -> None:
+        """Set the scenario target position for display.
+
+        Parameters
+        ----------
+        x, y : float
+            Target world coordinates.
+        """
+        self._target = (x, y)
+
+    def clear_target(self) -> None:
+        """Remove the target marker."""
+        self._target = None
 
     # ---------------------------------------------------------------- render
 
@@ -172,6 +195,28 @@ class Minimap:
             (int(dx_px), int(dy_px)),
             cfg.drone_radius,
         )
+
+        # Draw target marker (crosshair).
+        if self._target is not None:
+            tx_px, ty_px = self._world_to_minimap(*self._target)
+            txi, tyi = int(tx_px), int(ty_px)
+            r = cfg.target_radius
+            # Draw a diamond/crosshair marker.
+            pygame.draw.circle(mm_surface, cfg.target_color, (txi, tyi), r, 1)
+            pygame.draw.line(
+                mm_surface,
+                cfg.target_color,
+                (txi - r - 2, tyi),
+                (txi + r + 2, tyi),
+                1,
+            )
+            pygame.draw.line(
+                mm_surface,
+                cfg.target_color,
+                (txi, tyi - r - 2),
+                (txi, tyi + r + 2),
+                1,
+            )
 
         # Position the minimap on the main surface.
         sw, sh = surface.get_size()

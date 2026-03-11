@@ -37,6 +37,9 @@ pour toute l'equipe.
 | Installer sans viewer | `uv sync --extra server --dev` |
 | Lancer les tests | `uv run pytest` |
 | Lancer le serveur | `uv run python -m flairsim.server --data-dir path/to/data` |
+| Lancer le serveur (multi-modality) | `uv run python -m flairsim.server --data-root path/to/D006 --scenarios-dir scenarios/` |
+| Lancer le viewer | `uv run python -m flairsim.viewer --data-dir path/to/data` |
+| Lancer le viewer (avec grille) | `uv run python -m flairsim.viewer --data-dir path/to/data --grid 4` |
 | Ajouter une dependance | `uv add <package>` |
 | Ajouter une dep de dev | `uv add --group dev <package>` |
 | Mettre a jour les deps | `uv lock --upgrade` |
@@ -55,7 +58,7 @@ pour toute l'equipe.
 ## Running tests
 
 ```bash
-# Full test suite (268 tests)
+# Full test suite (428 tests across 13 files)
 uv run pytest
 
 # Verbose output
@@ -70,6 +73,9 @@ uv run pytest tests/test_simulator.py
 # Run tests matching a keyword
 uv run pytest -k "drone"
 uv run pytest -k "map_manager"
+uv run pytest -k "grid"
+uv run pytest -k "scenario"
+uv run pytest -k "multimodality"
 
 # Run with coverage (if installed)
 uv run pytest --cov=flairsim
@@ -82,18 +88,21 @@ uv run pytest --cov=flairsim
 | `test_action.py` | 13 | Action, ActionType |
 | `test_camera.py` | 15 | CameraConfig, CameraModel |
 | `test_drone.py` | 39 | DroneConfig, DroneState, Drone |
+| `test_grid.py` | 63 | GridOverlay, GridConfig, cell labelling, coordinate conversion |
 | `test_map_manager.py` | 44 | MapManager (integration, synthetic GeoTIFFs) |
 | `test_modality.py` | 11 | Modality, ModalitySpec |
+| `test_multimodality.py` | 65 | Multi-modality discovery, MapManager per modality, Observation.images, retro-compatibility |
 | `test_observation.py` | 14 | Observation, EpisodeResult |
-| `test_server.py` | 42 | HTTP server endpoints + SSE (FastAPI TestClient / uvicorn) |
+| `test_scenario.py` | -- | ScenarioLoader, Scenario parsing, ScenarioTarget, YAML validation |
+| `test_server.py` | 42 | HTTP server endpoints + SSE + scenario endpoints + grid params |
 | `test_simulator.py` | 47 | FlairSimulator (integration, synthetic GeoTIFFs) |
 | `test_telemetry.py` | 16 | TelemetryRecord, FlightLog |
 | `test_tile_loader.py` | 16 | TileInfo, TileData, parse/read functions |
 
-**Unit tests** (171 tests): Test classes in isolation with numpy arrays
+**Unit tests** (~230 tests): Test classes in isolation with numpy arrays
 and mock data.  No disk I/O.
 
-**Integration tests** (91 tests): Create temporary synthetic GeoTIFF grids
+**Integration tests** (~190 tests): Create temporary synthetic GeoTIFF grids
 on disk using `rasterio`, then run `MapManager` and `FlairSimulator`
 against them.  The server tests also fall into this category, using
 FastAPI's `TestClient` with synthetic data.
@@ -157,16 +166,35 @@ Enabled rule sets:
 
 ```
 simulateur/
-  flairsim/          # Main package (6 subpackages)
-    __init__.py      # Public API (17 exports)
-    map/             # GeoTIFF loading, spatial queries
+  flairsim/          # Main package (5 subpackages)
+    __init__.py      # Public API (22 exports)
+    map/             # GeoTIFF loading, spatial queries, modality detection
+      modality.py    # Modality enum, discover_modalities(), pick_primary_modality()
+      map_manager.py # MapManager, MapBounds
+      tile_loader.py # TileInfo, TileData, normalize_to_uint8()
     drone/           # Drone state, physics, camera, telemetry
-    core/            # Simulator engine, actions, observations
-    server/          # HTTP REST API (FastAPI) + SSE push
+    core/            # Simulator engine, actions, observations, scenarios, grid
+      simulator.py   # FlairSimulator (multi-modality, scenario-aware)
+      action.py      # Action, ActionType
+      observation.py # Observation (images dict), EpisodeResult
+      scenario.py    # Scenario, ScenarioLoader, ScenarioTarget
+      grid.py        # GridOverlay, GridConfig
+    server/          # HTTP REST API (FastAPI) + SSE push + scenario endpoints
+      app.py         # create_app(), _State, _apply_grid_overlay()
+      cli.py         # CLI with --data-root, --scenarios-dir, --grid args
     viewer/          # Pygame visualisation (optional, 3 modes)
-      remote.py      # ViewerObservation adapter (local ↔ server)
-  tests/             # Test suite (268 tests)
+      viewer.py      # FlairViewer (Tab = cycle modality, G = toggle grid)
+      remote.py      # ViewerObservation adapter (local <-> server)
+      minimap.py     # Minimap with target crosshair
+      hud.py         # HUD with scenario info + distance-to-target
+  scenarios/         # Predefined mission YAML files
+    find_target_D006.yaml
+    quick_explore_D012.yaml
+  tests/             # Test suite (428 tests, 13 files)
   docs/              # Technical documentation
+    api.md           # Full API reference
+    architecture.md  # Architecture and design decisions
+    contributing.md  # This file
   pyproject.toml     # Package + deps config
   uv.lock            # Lockfile (reproductibilite)
   .python-version    # Python version pinning
@@ -178,9 +206,38 @@ simulateur/
 ## Adding a new module
 
 1. Create your module file under the appropriate subpackage.
-2. Add any new public classes to `flairsim/__init__.py`'s `__all__` list.
+2. Add any new public classes to `flairsim/__init__.py`'s `__all__` list
+   (currently 22 exports).
 3. Write tests in `tests/test_<module>.py`.
 4. Run `uv run pytest` and `uv run ruff check` before committing.
+
+---
+
+## Adding a scenario
+
+1. Create a YAML file in `scenarios/`:
+
+```yaml
+scenario_id: my_scenario_name
+name: Human-readable name
+description: What the agent should do.
+dataset:
+  data_dir: FLAIR-HUB_TOY/D006-2018_AERIAL_RGBI
+  roi: null
+start:
+  x: 800100.0
+  y: 6500200.0
+  z: 150.0
+target:
+  x: 800300.0
+  y: 6500050.0
+  radius: 50.0
+max_steps: 200
+```
+
+2. The `scenario_id` must be unique across all YAML files.
+3. `dataset.data_dir` is relative to the `--data-root` passed to the server.
+4. Test your scenario: `uv run python -m flairsim.server --data-root /path/to/data --scenarios-dir scenarios/ --scenario my_scenario_name`
 
 ---
 
@@ -220,7 +277,8 @@ After adding, `uv.lock` is automatically updated. Commit both
 |---------|-------------|---------|
 | numpy | >= 1.24 | Array operations |
 | rasterio | >= 1.3 | GeoTIFF I/O (wraps GDAL) |
-| Pillow | >= 9.0 | Image resizing |
+| Pillow | >= 9.0 | Image resizing, grid overlay rendering |
+| pyyaml | >= 6.0 | Scenario YAML parsing |
 
 ### Optional extras
 

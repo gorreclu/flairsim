@@ -29,6 +29,8 @@ Keyboard controls (manual / remote fly modes)
 | R         | Reset episode              |
 | H         | Toggle HUD                 |
 | M         | Toggle minimap             |
+| Tab       | Cycle modality             |
+| G         | Toggle grid overlay        |
 +-----------+----------------------------+
 """
 
@@ -45,6 +47,7 @@ import numpy as np
 import pygame
 
 from ..core.action import Action, ActionType
+from ..core.grid import GridOverlay
 from ..map.map_manager import MapBounds
 from .hud import HUD, HUDConfig
 from .minimap import Minimap, MinimapConfig
@@ -131,6 +134,7 @@ class FlairViewer:
         self,
         config: Optional[ViewerConfig] = None,
         map_bounds: Optional[MapBounds] = None,
+        grid: Optional[int] = None,
     ) -> None:
         self._config = config or ViewerConfig()
         self._screen: Optional[pygame.Surface] = None
@@ -139,6 +143,17 @@ class FlairViewer:
         self._show_hud = self._config.show_hud
         self._show_minimap = self._config.show_minimap
         self._move_step = self._config.move_step
+
+        # Multi-modality state.
+        self._modality_names: list[str] = []
+        self._modality_index: int = 0
+
+        # Grid overlay state.
+        self._grid_overlay: Optional[GridOverlay] = (
+            GridOverlay(grid) if grid is not None else None
+        )
+        self._show_grid: bool = grid is not None
+        self._grid_n: int = grid if grid is not None else 4  # default size for toggle
 
         # Sub-components.
         self._hud = HUD(config=self._config.hud_config)
@@ -231,6 +246,10 @@ class FlairViewer:
                     self._show_hud = not self._show_hud
                 if event.key == pygame.K_m:
                     self._show_minimap = not self._show_minimap
+                if event.key == pygame.K_TAB:
+                    self._cycle_modality()
+                if event.key == pygame.K_g:
+                    self._toggle_grid()
 
         self._render_frame(obs)
         self._clock.tick(self._config.target_fps)
@@ -394,6 +413,10 @@ class FlairViewer:
                         self._show_hud = not self._show_hud
                     if event.key == pygame.K_m:
                         self._show_minimap = not self._show_minimap
+                    if event.key == pygame.K_TAB:
+                        self._cycle_modality()
+                    if event.key == pygame.K_g:
+                        self._toggle_grid()
 
             if not self._running:
                 break
@@ -557,8 +580,27 @@ class FlairViewer:
         """Render a complete frame: image + HUD + minimap."""
         assert self._screen is not None
 
-        # Convert observation image to a pygame surface.
-        rgb = obs.image_rgb  # (H, W, 3) uint8
+        # Update available modalities from the observation.
+        if obs.images_rgb:
+            new_names = sorted(obs.images_rgb.keys())
+            if new_names != self._modality_names:
+                self._modality_names = new_names
+                # Keep index valid.
+                if self._modality_index >= len(self._modality_names):
+                    self._modality_index = 0
+
+        # Choose which image to display.
+        if (
+            self._modality_names
+            and obs.images_rgb
+            and self._modality_index < len(self._modality_names)
+        ):
+            current_mod = self._modality_names[self._modality_index]
+            rgb = obs.images_rgb.get(current_mod, obs.image_rgb)
+        else:
+            rgb = obs.image_rgb
+            current_mod = None
+
         img_surface = self._array_to_surface(rgb)
 
         # Scale to fill the window.
@@ -568,13 +610,42 @@ class FlairViewer:
         )
         self._screen.blit(scaled, (0, 0))
 
+        # Draw grid overlay.
+        if self._show_grid and self._grid_overlay is not None:
+            self._grid_overlay.draw_on_surface(self._screen)
+
         # Draw HUD.
         if self._show_hud:
             fps = self._clock.get_fps() if self._clock else 0.0
+            # Show modality info in HUD extra lines.
+            extra = []
+            if len(self._modality_names) > 1 and current_mod:
+                idx = self._modality_index + 1
+                total = len(self._modality_names)
+                extra.append(f"Modality: {current_mod} ({idx}/{total})")
+                extra.append("[Tab] to cycle")
+            elif current_mod:
+                extra.append(f"Modality: {current_mod}")
+            # Grid info.
+            if self._show_grid and self._grid_overlay is not None:
+                extra.append(
+                    f"Grid: {self._grid_overlay.n}x{self._grid_overlay.n} [G] toggle"
+                )
+            self._hud.set_extra_lines(extra)
             self._hud.render(self._screen, obs, fps=fps)
 
         # Draw minimap.
         if self._show_minimap and self._minimap is not None:
+            # Set target from observation metadata if available.
+            meta = getattr(obs, "metadata", {})
+            if meta.get("target_x") is not None and meta.get("target_y") is not None:
+                try:
+                    self._minimap.set_target(
+                        float(meta["target_x"]), float(meta["target_y"])
+                    )
+                except (ValueError, TypeError):
+                    pass
+
             self._minimap.render(
                 self._screen,
                 drone_x=obs.drone_state.x,
@@ -617,6 +688,31 @@ class FlairViewer:
 
     # ---------------------------------------------------------------- input
 
+    def _cycle_modality(self) -> None:
+        """Advance to the next modality in the list."""
+        if len(self._modality_names) > 1:
+            self._modality_index = (self._modality_index + 1) % len(
+                self._modality_names
+            )
+            mod = self._modality_names[self._modality_index]
+            logger.debug("Switched to modality: %s", mod)
+
+    def _toggle_grid(self) -> None:
+        """Toggle the grid overlay on/off.
+
+        If the grid was never configured, a default 4x4 grid is created
+        on first toggle.
+        """
+        self._show_grid = not self._show_grid
+        if self._show_grid and self._grid_overlay is None:
+            self._grid_overlay = GridOverlay(self._grid_n)
+        logger.debug(
+            "Grid overlay: %s (%dx%d)",
+            "ON" if self._show_grid else "OFF",
+            self._grid_n,
+            self._grid_n,
+        )
+
     def _process_manual_events(self) -> Optional[Action | str]:
         """Process pygame events and return an Action or control signal.
 
@@ -643,6 +739,14 @@ class FlairViewer:
 
                 if event.key == pygame.K_m:
                     self._show_minimap = not self._show_minimap
+                    return None
+
+                if event.key == pygame.K_TAB:
+                    self._cycle_modality()
+                    return None
+
+                if event.key == pygame.K_g:
+                    self._toggle_grid()
                     return None
 
                 if event.key == pygame.K_r:

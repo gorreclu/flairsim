@@ -13,6 +13,8 @@ GET  /telemetry
     Full flight log for the current episode.
 GET  /config
     Simulator configuration and map bounds.
+GET  /scenarios
+    List available scenarios (when a scenario loader is configured).
 GET  /events
     Server-Sent Events stream of observations (pushed on reset/step).
 """
@@ -33,9 +35,12 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from ..core.action import Action, ActionType
+from ..core.grid import GridOverlay
+from ..core.scenario import Scenario, ScenarioLoader
 from ..core.simulator import FlairSimulator, SimulatorConfig
 from ..drone.camera import CameraConfig
 from ..drone.drone import DroneConfig
+from ..map.tile_loader import normalize_to_uint8
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,9 @@ class ResetRequest(BaseModel):
         None, description="Start northing (m). None = map centre."
     )
     z: Optional[float] = Field(None, description="Start altitude (m). None = default.")
+    scenario_id: Optional[str] = Field(
+        None, description="Scenario ID to load. None = free flight (use current data)."
+    )
 
 
 class StepRequest(BaseModel):
@@ -101,6 +109,13 @@ class ObservationResponse(BaseModel):
     image_height: int
     result: Optional[EpisodeResultResponse] = None
     metadata: Dict[str, Any] = {}
+    images: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-modality PNG images in base64, keyed by modality name "
+            "(e.g. 'AERIAL_RGBI', 'DEM_ELEV'). Empty in single-modality mode."
+        ),
+    )
 
 
 class TelemetryRecordResponse(BaseModel):
@@ -151,6 +166,23 @@ class ConfigResponse(BaseModel):
     camera: Dict[str, Any]
     max_steps: int
     is_running: bool
+    scenario_id: Optional[str] = None
+
+
+class ScenarioSummaryResponse(BaseModel):
+    """Summary of a single scenario."""
+
+    scenario_id: str
+    name: str
+    description: str
+    max_steps: int
+    target_radius: float
+
+
+class ScenariosListResponse(BaseModel):
+    """Response for GET /scenarios."""
+
+    scenarios: List[ScenarioSummaryResponse]
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +193,20 @@ class ConfigResponse(BaseModel):
 def _encode_image_png(image: np.ndarray) -> str:
     """Encode a (bands, H, W) array as base64 PNG.
 
-    Converts to RGB uint8 (H, W, 3) before encoding.
+    Converts to RGB uint8 (H, W, 3) before encoding.  Non-uint8 data
+    (e.g. float32 DEM, uint16 satellite) is normalised via percentile
+    stretch to produce a visually meaningful 8-bit image.
     """
+    # Normalise to uint8 if needed (handles uint16, float32, etc.).
+    if image.dtype != np.uint8:
+        image = normalize_to_uint8(image)
+
     if image.ndim == 3 and image.shape[0] >= 3:
         rgb = np.transpose(image[:3], (1, 2, 0))
+    elif image.ndim == 3 and image.shape[0] == 2:
+        # Two bands (e.g. DEM DSM+DTM): show first band as greyscale.
+        band = image[0]
+        rgb = np.stack([band, band, band], axis=-1)
     elif image.ndim == 3 and image.shape[0] == 1:
         band = image[0]
         rgb = np.stack([band, band, band], axis=-1)
@@ -180,8 +222,48 @@ def _encode_image_png(image: np.ndarray) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def _obs_to_response(obs) -> ObservationResponse:
-    """Convert an Observation to a serialisable response."""
+def _apply_grid_overlay(image: np.ndarray, grid: Optional[GridOverlay]) -> np.ndarray:
+    """Apply grid overlay to a (bands, H, W) image if grid is set.
+
+    The overlay expects (H, W, 3) uint8, so we convert, draw, and
+    convert back to (3, H, W) for the normal encoding pipeline.
+    """
+    if grid is None:
+        return image
+
+    # Normalise to uint8 first so the overlay draws on a sensible image.
+    img = image if image.dtype == np.uint8 else normalize_to_uint8(image)
+
+    # Convert (bands, H, W) → (H, W, 3) for the overlay.
+    if img.ndim == 3 and img.shape[0] >= 3:
+        rgb = np.transpose(img[:3], (1, 2, 0))
+    elif img.ndim == 3 and img.shape[0] == 2:
+        band = img[0]
+        rgb = np.stack([band, band, band], axis=-1)
+    elif img.ndim == 3 and img.shape[0] == 1:
+        band = img[0]
+        rgb = np.stack([band, band, band], axis=-1)
+    elif img.ndim == 2:
+        rgb = np.stack([img, img, img], axis=-1)
+    else:
+        rgb = img
+
+    rgb = rgb.astype(np.uint8)
+    annotated = grid.draw(rgb)
+    # Convert back to (3, H, W) so _encode_image_png handles it.
+    return np.transpose(annotated, (2, 0, 1))
+
+
+def _obs_to_response(obs, grid: Optional[GridOverlay] = None) -> ObservationResponse:
+    """Convert an Observation to a serialisable response.
+
+    Parameters
+    ----------
+    obs : Observation
+        Simulator observation.
+    grid : GridOverlay or None
+        If set, the grid is drawn on all images before encoding.
+    """
     state = obs.drone_state
     result = None
     if obs.result is not None:
@@ -191,6 +273,17 @@ def _obs_to_response(obs) -> ObservationResponse:
             steps_taken=obs.result.steps_taken,
             distance_travelled=obs.result.distance_travelled,
         )
+
+    # Optionally apply grid overlay to primary image.
+    primary_image = _apply_grid_overlay(obs.image, grid)
+
+    # Encode per-modality images (with grid if active).
+    images_b64: Dict[str, str] = {}
+    if obs.images:
+        for mod_name, mod_image in obs.images.items():
+            images_b64[mod_name] = _encode_image_png(
+                _apply_grid_overlay(mod_image, grid)
+            )
 
     return ObservationResponse(
         step=obs.step,
@@ -205,11 +298,12 @@ def _obs_to_response(obs) -> ObservationResponse:
         ),
         ground_footprint=obs.ground_footprint,
         ground_resolution=obs.ground_resolution,
-        image_base64=_encode_image_png(obs.image),
+        image_base64=_encode_image_png(primary_image),
         image_width=obs.image.shape[-1],
         image_height=obs.image.shape[-2],
         result=result,
         metadata={k: str(v) for k, v in obs.metadata.items()},
+        images=images_b64,
     )
 
 
@@ -238,6 +332,9 @@ def create_app(
     drone_config: Optional[DroneConfig] = None,
     camera_config: Optional[CameraConfig] = None,
     preload_tiles: bool = True,
+    scenario_loader: Optional[ScenarioLoader] = None,
+    scenario_id: Optional[str] = None,
+    grid: Optional[int] = None,
 ) -> FastAPI:
     """Create a FastAPI application wrapping a FlairSimulator.
 
@@ -255,41 +352,57 @@ def create_app(
         Camera sensor parameters.
     preload_tiles : bool
         Load all tiles into RAM at start.
+    scenario_loader : ScenarioLoader or None
+        Loader for scenario YAML files.  ``None`` disables scenario support.
+    scenario_id : str or None
+        Initial scenario to load at startup.  ``None`` starts in free-flight mode.
+    grid : int or None
+        Default grid overlay size (NxN).  ``None`` disables the grid.
+        Can be overridden per-request via the ``grid`` query parameter.
 
     Returns
     -------
     FastAPI
         The configured application instance.
     """
+    _drone_config = drone_config or DroneConfig()
+    _camera_config = camera_config or CameraConfig()
+
+    # Load initial scenario if specified.
+    initial_scenario: Optional[Scenario] = None
+    if scenario_id and scenario_loader:
+        initial_scenario = scenario_loader.get(scenario_id)
+        # Override data_dir and roi from the scenario.
+        data_dir = scenario_loader.resolve_data_dir(initial_scenario)
+        roi = initial_scenario.dataset.roi
+        max_steps = initial_scenario.max_steps
+
     config = SimulatorConfig(
-        drone_config=drone_config,
-        camera_config=camera_config,
+        drone_config=_drone_config,
+        camera_config=_camera_config,
         max_steps=max_steps,
         roi=roi,
         preload_tiles=preload_tiles,
     )
 
-    sim = FlairSimulator(data_dir=data_dir, config=config)
+    sim = FlairSimulator(data_dir=data_dir, config=config, scenario=initial_scenario)
+
+    # Mutable state: the active simulator and scenario can change when
+    # /reset is called with a scenario_id.
+    class _State:
+        current_sim: FlairSimulator = sim
+        current_scenario: Optional[Scenario] = initial_scenario
+        grid_overlay: Optional[GridOverlay] = (
+            GridOverlay(grid) if grid is not None else None
+        )
+
+    state = _State()
 
     # SSE subscriber management.
-    # Each connected viewer gets its own asyncio.Queue.  When an
-    # observation is produced (by /reset or /step), it is serialised
-    # once and pushed to every subscriber queue.
-    #
-    # Thread-safety note: The ``/reset`` and ``/step`` endpoints are
-    # ``async def`` so they run directly on the event loop.  This
-    # lets ``_broadcast`` use ``put_nowait`` safely without
-    # cross-thread concerns.  The actual simulator calls are
-    # offloaded to a thread via ``asyncio.to_thread`` to avoid
-    # blocking the loop during image rendering.
     _subscribers: Set[asyncio.Queue[str]] = set()
 
     def _broadcast(obs_response: ObservationResponse) -> None:
-        """Push a serialised observation to all SSE subscribers.
-
-        Must be called from the event-loop thread (i.e. from an
-        ``async def`` endpoint).
-        """
+        """Push a serialised observation to all SSE subscribers."""
         if not _subscribers:
             return
         payload = obs_response.model_dump_json()
@@ -298,7 +411,6 @@ def create_app(
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                # Slow consumer -- drop oldest event to keep up.
                 try:
                     q.get_nowait()
                 except asyncio.QueueEmpty:
@@ -323,70 +435,140 @@ def create_app(
     # ---------------------------------------------------------------- routes
 
     @app.post("/reset", response_model=ObservationResponse)
-    async def reset(body: Optional[ResetRequest] = None):
+    async def reset(
+        body: Optional[ResetRequest] = None,
+        grid: Optional[int] = None,
+    ):
         """Start a new episode.
 
         Resets the drone and returns the initial observation.
         If no body is provided, the drone starts at the map centre
         with the default altitude.
+
+        If ``scenario_id`` is provided and a scenario loader is
+        configured, the simulator is (re)created with the scenario's
+        dataset and the episode starts at the scenario's start position.
+
+        Parameters
+        ----------
+        grid : int or None
+            Grid overlay size (NxN).  Overrides the server default for
+            subsequent responses.  ``0`` disables the grid.
         """
         if body is None:
             body = ResetRequest()
 
-        obs = await asyncio.to_thread(sim.reset, x=body.x, y=body.y, z=body.z)
+        # Handle scenario switching.
+        if body.scenario_id is not None:
+            if scenario_loader is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Scenario support is not configured on this server.",
+                )
+            try:
+                new_scenario = scenario_loader.get(body.scenario_id)
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Scenario '{body.scenario_id}' not found.",
+                )
+
+            new_data_dir = scenario_loader.resolve_data_dir(new_scenario)
+            new_config = SimulatorConfig(
+                drone_config=_drone_config,
+                camera_config=_camera_config,
+                max_steps=new_scenario.max_steps,
+                roi=new_scenario.dataset.roi,
+                preload_tiles=preload_tiles,
+            )
+            state.current_sim = await asyncio.to_thread(
+                FlairSimulator,
+                data_dir=new_data_dir,
+                config=new_config,
+                scenario=new_scenario,
+            )
+            state.current_scenario = new_scenario
+            logger.info("Loaded scenario: %s", new_scenario.scenario_id)
+        elif body.scenario_id is None and state.current_scenario is not None:
+            # Explicit reset without scenario_id keeps current scenario.
+            pass
+
+        # Update grid overlay if requested.
+        if grid is not None:
+            if grid == 0:
+                state.grid_overlay = None
+            else:
+                state.grid_overlay = GridOverlay(grid)
+
+        obs = await asyncio.to_thread(
+            state.current_sim.reset, x=body.x, y=body.y, z=body.z
+        )
         logger.info(
             "Episode reset at (%.1f, %.1f, %.1f)",
             obs.position[0],
             obs.position[1],
             obs.position[2],
         )
-        response = _obs_to_response(obs)
+        response = _obs_to_response(obs, grid=state.grid_overlay)
         _broadcast(response)
         return response
 
     @app.post("/step", response_model=ObservationResponse)
-    async def step(body: StepRequest):
+    async def step(body: StepRequest, grid: Optional[int] = None):
         """Advance simulation by one step.
 
         Applies the given displacement and returns the new observation
         with the updated image and telemetry.
+
+        Parameters
+        ----------
+        grid : int or None
+            Grid overlay size (NxN).  Overrides the server default for
+            subsequent responses.  ``0`` disables the grid.
         """
-        if not sim.is_running:
+        if not state.current_sim.is_running:
             raise HTTPException(
                 status_code=409,
                 detail="No active episode. Call POST /reset first.",
             )
 
+        # Update grid overlay if requested.
+        if grid is not None:
+            if grid == 0:
+                state.grid_overlay = None
+            else:
+                state.grid_overlay = GridOverlay(grid)
+
         action_type = _parse_action_type(body.action_type)
         action = Action(dx=body.dx, dy=body.dy, dz=body.dz, action_type=action_type)
-        obs = await asyncio.to_thread(sim.step, action)
-        response = _obs_to_response(obs)
+        obs = await asyncio.to_thread(state.current_sim.step, action)
+        response = _obs_to_response(obs, grid=state.grid_overlay)
         _broadcast(response)
         return response
 
     @app.get("/state", response_model=DroneStateResponse)
     def get_state():
         """Get current drone state without advancing the simulation."""
-        if not sim.is_running:
+        if not state.current_sim.is_running:
             raise HTTPException(
                 status_code=409,
                 detail="No active episode. Call POST /reset first.",
             )
 
-        state = sim.drone.state
+        s = state.current_sim.drone.state
         return DroneStateResponse(
-            x=state.x,
-            y=state.y,
-            z=state.z,
-            heading=state.heading,
-            step_count=state.step_count,
-            total_distance=state.total_distance,
+            x=s.x,
+            y=s.y,
+            z=s.z,
+            heading=s.heading,
+            step_count=s.step_count,
+            total_distance=s.total_distance,
         )
 
     @app.get("/telemetry", response_model=TelemetryResponse)
     def get_telemetry():
         """Get the full flight log for the current episode."""
-        log = sim.flight_log
+        log = state.current_sim.flight_log
         alt = log.altitude_range
         return TelemetryResponse(
             total_steps=log.total_steps,
@@ -412,16 +594,17 @@ def create_app(
     @app.get("/config", response_model=ConfigResponse)
     def get_config():
         """Get simulator configuration and map information."""
-        bounds = sim.map_bounds
-        drone_cfg = sim.drone.config
-        cam_cfg = sim.camera.config
+        cur = state.current_sim
+        bounds = cur.map_bounds
+        drone_cfg = cur.drone.config
+        cam_cfg = cur.camera.config
 
         return ConfigResponse(
-            data_dir=str(sim._data_dir),
-            roi=sim.map_manager.roi_name,
-            n_tiles=sim.map_manager.n_tiles_loaded,
-            pixel_size_m=sim.map_manager.pixel_size_m,
-            tile_ground_size=sim.map_manager.tile_ground_size,
+            data_dir=str(cur._data_dir),
+            roi=cur.map_manager.roi_name,
+            n_tiles=cur.map_manager.n_tiles_loaded,
+            pixel_size_m=cur.map_manager.pixel_size_m,
+            tile_ground_size=cur.map_manager.tile_ground_size,
             map_bounds=MapBoundsResponse(
                 x_min=bounds.x_min,
                 y_min=bounds.y_min,
@@ -440,9 +623,33 @@ def create_app(
                 "fov_deg": cam_cfg.fov_deg,
                 "image_size": cam_cfg.image_size,
             },
-            max_steps=sim.max_steps,
-            is_running=sim.is_running,
+            max_steps=cur.max_steps,
+            is_running=cur.is_running,
+            scenario_id=(
+                state.current_scenario.scenario_id if state.current_scenario else None
+            ),
         )
+
+    # ---------------------------------------------------------------- scenarios
+
+    @app.get("/scenarios", response_model=ScenariosListResponse)
+    def list_scenarios():
+        """List all available scenarios."""
+        if scenario_loader is None:
+            return ScenariosListResponse(scenarios=[])
+
+        summaries = []
+        for sc in scenario_loader.list_scenarios():
+            summaries.append(
+                ScenarioSummaryResponse(
+                    scenario_id=sc.scenario_id,
+                    name=sc.name,
+                    description=sc.description,
+                    max_steps=sc.max_steps,
+                    target_radius=sc.target.radius,
+                )
+            )
+        return ScenariosListResponse(scenarios=summaries)
 
     # ---------------------------------------------------------------- SSE
 
