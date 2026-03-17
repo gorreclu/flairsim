@@ -25,8 +25,9 @@ import asyncio
 import base64
 import io
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -336,6 +337,7 @@ def create_app(
     scenario_id: Optional[str] = None,
     grid: Optional[int] = None,
     domain: Optional[str] = None,
+    downloader: Optional[Any] = None,
 ) -> FastAPI:
     """Create a FastAPI application wrapping a FlairSimulator.
 
@@ -363,6 +365,9 @@ def create_app(
     domain : str or None
         FLAIR-HUB domain prefix (e.g. ``"D006-2020"``).  Passed through
         to the simulator for domain-aware modality discovery.
+    downloader : HubDownloader or None
+        If set, the downloader's :meth:`cleanup` is called on shutdown
+        (via the FastAPI lifespan handler) to remove temporary data.
 
     Returns
     -------
@@ -435,6 +440,18 @@ def create_app(
         for q in dead:
             _subscribers.discard(q)
 
+    # Lifespan: cleanup downloaded data on shutdown.
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """FastAPI lifespan handler for startup/shutdown cleanup."""
+        logger.info("FlairSim server starting up.")
+        yield
+        logger.info("FlairSim server shutting down.")
+        state.current_sim.close()
+        if downloader is not None:
+            logger.info("Cleaning up downloaded data ...")
+            downloader.cleanup()
+
     app = FastAPI(
         title="FlairSim Drone Simulator",
         description=(
@@ -443,6 +460,7 @@ def create_app(
             "actions and receives observations (image + telemetry)."
         ),
         version="0.1.0",
+        lifespan=_lifespan,
     )
 
     # ---------------------------------------------------------------- routes

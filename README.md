@@ -19,6 +19,7 @@ telemetry).
 | Feature | Description |
 |---------|-------------|
 | **Real aerial imagery** | Flies over 0.2 m/px IGN orthophotos (FLAIR-HUB D004, D005, ...) |
+| **Auto-download from HuggingFace** | `--domain D006-2020` auto-downloads ZIP files from IGNF/FLAIR-HUB, extracts to a temp directory, and cleans up on shutdown (Ctrl+C) |
 | **Multi-modality** | Auto-discovers and loads all available modalities (RGBI, DEM, SPOT, Sentinel-1/2, labels) from a parent directory. Tab key cycles between them in the viewer |
 | **Predefined scenarios** | YAML-based mission scenarios with start position, target location, acceptance radius, and automatic success/failure evaluation |
 | **Grid overlay (SoM/Scaffold)** | NxN alphanumeric grid overlay (A1, B2, ...) for VLM spatial prompting, inspired by Set-of-Mark and Scaffold prompting research |
@@ -27,7 +28,7 @@ telemetry).
 | **Interactive viewer** | Pygame-based desktop viewer with HUD, minimap, and three modes (local / observe / fly) |
 | **SSE push channel** | `GET /events` streams observations to observer viewers in real time |
 | **Telemetry logging** | Full flight log with position, displacement, clipping info |
-| **Well tested** | 438 tests (unit + integration + server + SSE), all passing |
+| **Well tested** | 460 tests (unit + integration + server + SSE + downloader), all passing |
 
 ---
 
@@ -35,6 +36,7 @@ telemetry).
 
 ```
 flairsim/
+  data/           # Auto-download from HuggingFace (HubDownloader)
   map/           # GeoTIFF tile loading, spatial queries, modality discovery
   drone/         # Drone state & physics, camera model, telemetry
   core/          # Simulator engine, actions, observations, scenarios, grid overlay
@@ -96,7 +98,7 @@ uv sync --all-extras
 | Group | Install command | Packages |
 |-------|-----------------|----------|
 | Core | `uv sync` | numpy, rasterio, Pillow, pyyaml |
-| Server | `uv sync --extra server` | + fastapi, uvicorn, sse-starlette |
+| Server | `uv sync --extra server` | + fastapi, uvicorn, sse-starlette, huggingface_hub |
 | Viewer | `uv sync --extra viewer` | + pygame |
 | Dev | `uv sync --dev` | + pytest, pytest-asyncio, ruff, httpx |
 | Everything | `uv sync --all-extras` | All of the above |
@@ -119,6 +121,14 @@ uv run python -m flairsim.server --data-dir path/to/D006-2020
 uv run python -m flairsim.server \
     --data-dir path/to/FLAIR-HUB \
     --domain D006-2020
+
+# Auto-download from HuggingFace (no --data-dir needed):
+# Downloads to a temp directory, cleans up on Ctrl+C / shutdown
+uv run python -m flairsim.server --domain D006-2020
+
+# Auto-download with multiple modalities
+uv run python -m flairsim.server --domain D006-2020 \
+    --modalities AERIAL_RGBI DEM_ELEV
 
 # With scenarios (no --data-dir needed; data resolved from --data-root + scenario YAML)
 uv run python -m flairsim.server \
@@ -147,7 +157,7 @@ is available at `http://127.0.0.1:8000/docs` (Swagger UI).
 ```
 uv run python -m flairsim.server [OPTIONS]
 
-  --data-dir      Path to data directory (required for free flight, optional with --scenario)
+  --data-dir      Path to data directory (required for free flight unless --domain is used)
   --host          Host to bind (default: 127.0.0.1)
   --port          Port (default: 8000)
   --roi           ROI to load (default: auto-select largest)
@@ -158,7 +168,8 @@ uv run python -m flairsim.server [OPTIONS]
   --no-preload    Don't preload tiles (saves RAM)
   --scenarios-dir Directory containing scenario YAML files
   --data-root     Root for resolving relative scenario data_dir paths
-  --domain        FLAIR-HUB domain prefix (e.g. D006-2020) for flat layout
+  --domain        FLAIR-HUB domain prefix (e.g. D006-2020); triggers auto-download if no --data-dir
+  --modalities    Modalities to download (default: AERIAL_RGBI). Only used with auto-download
   --scenario      Scenario ID to load at startup (no --data-dir needed)
   --grid N        Enable NxN grid overlay (overridable per-request via ?grid=N)
   -v              Debug logging
@@ -393,6 +404,10 @@ directory or a parent directory containing multiple modalities:
 # Flat FLAIR-HUB layout (data from HuggingFace): use --domain to filter
 --data-dir path/to/FLAIR-HUB --domain D006-2020
   -> discovers: all D006-2020_* modality dirs
+
+# Auto-download from HuggingFace (no --data-dir needed)
+--domain D006-2020 --modalities AERIAL_RGBI DEM_ELEV
+  -> downloads and extracts to a temp dir, cleaned up on shutdown
 ```
 
 In multi-modality mode:
@@ -483,7 +498,28 @@ IGN (Institut national de l'information geographique et forestiere).
 The full FLAIR-HUB dataset is hosted on HuggingFace:
 [IGNF/FLAIR-HUB](https://huggingface.co/datasets/IGNF/FLAIR-HUB) (~720 GB total).
 
-**Option 1: Official GUI download tool** (recommended for selecting specific domains/modalities)
+**Option 1: Automatic download** (recommended)
+
+FlairSim can automatically download the data you need from HuggingFace.
+Just specify `--domain` without `--data-dir`:
+
+```bash
+# Download AERIAL_RGBI for domain D006-2020 (default modality)
+uv run python -m flairsim.server --domain D006-2020
+
+# Download multiple modalities
+uv run python -m flairsim.server --domain D006-2020 \
+    --modalities AERIAL_RGBI DEM_ELEV
+
+# With a specific ROI
+uv run python -m flairsim.server --domain D006-2020 --roi UU-S2-1
+```
+
+Data is downloaded to a temporary directory and **automatically cleaned up**
+when the server shuts down (Ctrl+C, SIGTERM, or normal exit). No manual
+cleanup is needed.
+
+**Option 2: Official GUI download tool** (for selecting specific domains/modalities)
 
 ```bash
 # Download the official download script
@@ -495,7 +531,7 @@ python flair-hub-HF-dl.py
 # Data is downloaded to ./FLAIR-HUB_download/ by default.
 ```
 
-**Option 2: Direct download with `huggingface_hub`**
+**Option 3: Direct download with `huggingface_hub`**
 
 ```python
 from huggingface_hub import hf_hub_download
@@ -504,14 +540,14 @@ from huggingface_hub import hf_hub_download
 hf_hub_download(
     repo_id="IGNF/FLAIR-HUB",
     repo_type="dataset",
-    filename="data/D006-2020_AERIAL_RGBI_IMS.zip",
+    filename="data/D006-2020_AERIAL_RGBI.zip",
     local_dir="./FLAIR-HUB",
 )
 # Unzip, then point FlairSim at the result:
 # flairsim-server --data-dir ./FLAIR-HUB/D006-2020_AERIAL_RGBI
 ```
 
-**Option 3: Use the toy dataset** (for development/testing)
+**Option 4: Use the toy dataset** (for development/testing)
 
 If you have the `FLAIR-HUB_TOY` subset locally, point directly at it:
 
@@ -595,12 +631,13 @@ Formula: `footprint = 2 * altitude * tan(FOV/2)`, GSD = footprint / image_size.
 ## Running the tests
 
 ```bash
-uv run pytest            # 438 tests, ~6s
+uv run pytest            # 460 tests, ~6s
 uv run pytest -v         # verbose
 uv run pytest tests/test_server.py  # server + SSE tests
 uv run pytest tests/test_grid.py    # grid overlay tests
 uv run pytest tests/test_multimodality.py  # multi-modality tests
 uv run pytest tests/test_scenario.py       # scenario tests
+uv run pytest tests/test_downloader.py     # HuggingFace downloader tests
 ```
 
 ---
@@ -611,6 +648,8 @@ uv run pytest tests/test_scenario.py       # scenario tests
 simulateur/
   flairsim/                  # Main package
     __init__.py              # Public API exports (22 symbols)
+    data/                    # Data acquisition from HuggingFace
+      downloader.py          # HubDownloader: download, extract, cleanup
     map/                     # GeoTIFF tile loading and spatial queries
       modality.py            # Modality enum + discover_modalities(), pick_primary_modality()
       tile_loader.py         # TileInfo, TileData, read_tile(), normalize_to_uint8()
@@ -638,7 +677,7 @@ simulateur/
   scenarios/                 # Scenario YAML files
     find_target_D006.yaml    # Example scenario
     quick_explore_D012.yaml  # Example scenario
-  tests/                     # 438 tests (13 files)
+  tests/                     # 460 tests (14 files)
   docs/                      # Technical documentation
   pyproject.toml             # Package config (uv/hatchling)
 ```

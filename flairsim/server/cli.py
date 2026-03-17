@@ -10,6 +10,10 @@ Usage::
     # Flat FLAIR-HUB layout with --domain
     flairsim-server --data-dir path/to/FLAIR-HUB --domain D006-2020
 
+    # Auto-download from HuggingFace (no --data-dir needed)
+    flairsim-server --domain D006-2020
+    flairsim-server --domain D006-2020 --modalities AERIAL_RGBI DEM_ELEV
+
     # Scenario mode (--data-dir not needed, resolved from --data-root + scenario YAML)
     flairsim-server --data-root path/to/FLAIR-HUB --scenarios-dir scenarios/ --scenario find_target_D006
 """
@@ -18,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
+from typing import Optional
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -34,7 +40,7 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Path to FLAIR-HUB data directory (single modality like "
             "D004-2021_AERIAL_RGBI, or parent directory for multi-modality). "
-            "Required for free flight; optional when --scenario is used."
+            "Required for free flight unless --domain is used for auto-download."
         ),
     )
     parser.add_argument(
@@ -101,10 +107,21 @@ def main(argv: list[str] | None = None) -> None:
         "--domain",
         default=None,
         help=(
-            "FLAIR-HUB domain prefix (e.g. D006-2020). Required when "
-            "--data-dir points to a flat FLAIR-HUB root with multiple "
-            "domains as siblings. When --data-dir points to a single "
-            "modality directory, the domain is inferred automatically."
+            "FLAIR-HUB domain prefix (e.g. D006-2020). When --data-dir "
+            "is omitted, triggers automatic download from HuggingFace. "
+            "When --data-dir is provided, filters modality discovery to "
+            "this domain only."
+        ),
+    )
+    parser.add_argument(
+        "--modalities",
+        nargs="+",
+        default=None,
+        help=(
+            "Modalities to download from HuggingFace (only used with "
+            "auto-download, i.e. --domain without --data-dir). "
+            "Default: AERIAL_RGBI. "
+            "Example: --modalities AERIAL_RGBI DEM_ELEV"
         ),
     )
     parser.add_argument(
@@ -139,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s  %(name)-20s  %(levelname)-7s  %(message)s",
         datefmt="%H:%M:%S",
     )
+    log = logging.getLogger(__name__)
 
     # --- Lazy imports (so --help is fast) ---
     try:
@@ -166,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
             scenarios_dir=args.scenarios_dir,
             data_root=args.data_root,
         )
-        logging.getLogger(__name__).info(
+        log.info(
             "Scenario loader: %s (%d scenarios)",
             args.scenarios_dir,
             len(scenario_loader.list_ids()),
@@ -179,17 +197,51 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    # --- Validate: --data-dir is required unless a scenario provides it ---
-    if not args.data_dir and not args.scenario:
-        parser.error(
-            "--data-dir is required for free flight. "
-            "In scenario mode, the data path is resolved from "
-            "--data-root + the scenario's dataset.data_dir."
+    # --- Auto-download from HuggingFace if --domain without --data-dir ---
+    downloader: Optional["HubDownloader"] = None  # noqa: F821
+    if not args.data_dir and args.domain and not args.scenario:
+        from ..data.downloader import HubDownloader
+
+        modalities = args.modalities or ["AERIAL_RGBI"]
+        downloader = HubDownloader(
+            domain=args.domain,
+            modalities=modalities,
         )
 
-    # In scenario mode without --data-dir, use a placeholder; create_app
-    # will override it from the scenario's dataset.data_dir.
-    effective_data_dir = args.data_dir or ""
+        log.info(
+            "Auto-downloading domain %s modalities %s from HuggingFace ...",
+            args.domain,
+            modalities,
+        )
+        try:
+            downloader.download()
+        except Exception:
+            log.exception("Download failed. Cleaning up ...")
+            downloader.cleanup()
+            sys.exit(1)
+
+        effective_data_dir = str(downloader.data_dir)
+        log.info("Data downloaded to: %s", effective_data_dir)
+
+    elif not args.data_dir and not args.scenario:
+        # No --data-dir, no --domain, no --scenario: error.
+        parser.error(
+            "--data-dir is required for free flight. "
+            "Use --domain to auto-download from HuggingFace, "
+            "or use --scenario to load from a scenario file."
+        )
+    else:
+        # --data-dir provided, or --scenario mode.
+        # In scenario mode without --data-dir, use a placeholder; create_app
+        # will override it from the scenario's dataset.data_dir.
+        effective_data_dir = args.data_dir or ""
+
+    # Warn if --modalities is used with --data-dir (it's ignored).
+    if args.modalities and args.data_dir:
+        log.warning(
+            "--modalities is only used with auto-download (--domain without "
+            "--data-dir). Ignoring --modalities since --data-dir is set."
+        )
 
     app = create_app(
         data_dir=effective_data_dir,
@@ -202,13 +254,30 @@ def main(argv: list[str] | None = None) -> None:
         scenario_id=args.scenario,
         grid=args.grid,
         domain=args.domain,
+        downloader=downloader,
     )
 
-    logging.getLogger(__name__).info(
-        "Starting FlairSim server on %s:%d", args.host, args.port
-    )
+    # --- Register signal handlers for cleanup ---
+    def _shutdown_handler(signum, frame):
+        """Handle SIGINT/SIGTERM: clean up downloaded data, then exit."""
+        sig_name = signal.Signals(signum).name
+        log.info("Received %s, shutting down ...", sig_name)
+        if downloader is not None:
+            downloader.cleanup()
+        sys.exit(0)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+
+    log.info("Starting FlairSim server on %s:%d", args.host, args.port)
+
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        # Belt-and-suspenders: also clean up when uvicorn exits normally
+        # (e.g. via SIGINT caught by uvicorn internally before our handler).
+        if downloader is not None:
+            downloader.cleanup()
 
 
 if __name__ == "__main__":
