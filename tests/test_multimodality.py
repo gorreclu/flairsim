@@ -32,7 +32,9 @@ from flairsim.drone.camera import CameraConfig
 from flairsim.drone.drone import DroneConfig, DroneState
 from flairsim.map.modality import (
     Modality,
+    _extract_domain_prefix,
     discover_modalities,
+    infer_domain_from_dir,
     is_single_modality_dir,
     pick_primary_modality,
 )
@@ -289,6 +291,86 @@ class TestDiscoverModalities:
         result = discover_modalities(tmp_path)
         # AERIAL_RGBI suffix is "AERIAL_RGBI", not "RGBI".
         assert Modality.AERIAL_RGBI not in result
+
+
+# =========================================================================
+# Tests: domain-aware discovery (flat FLAIR-HUB layout)
+# =========================================================================
+
+
+class TestDomainAwareDiscovery:
+    """Test domain-aware ``discover_modalities`` and helpers."""
+
+    @pytest.fixture()
+    def flat_layout(self, tmp_path: Path) -> Path:
+        """Create a flat FLAIR-HUB layout with two domains."""
+        root = tmp_path / "FLAIR-HUB"
+        root.mkdir()
+        # Domain D006-2020
+        for suffix in ("AERIAL_RGBI", "DEM_ELEV", "SPOT_RGBI"):
+            d = root / f"D006-2020_{suffix}"
+            d.mkdir()
+            roi = d / "UU-S2-1"
+            roi.mkdir()
+            # Write a dummy file so it looks like data.
+            (roi / "dummy.tif").touch()
+        # Domain D012-2019
+        for suffix in ("AERIAL_RGBI", "DEM_ELEV"):
+            d = root / f"D012-2019_{suffix}"
+            d.mkdir()
+            roi = d / "FF-S1-14"
+            roi.mkdir()
+            (roi / "dummy.tif").touch()
+        # A non-matching directory
+        (root / "GLOBAL_ALL_MTD").mkdir()
+        return root
+
+    def test_discover_with_domain_filter(self, flat_layout: Path):
+        result = discover_modalities(flat_layout, domain="D006-2020")
+        assert len(result) == 3
+        assert Modality.AERIAL_RGBI in result
+        assert Modality.DEM_ELEV in result
+        assert Modality.SPOT_RGBI in result
+
+    def test_discover_other_domain(self, flat_layout: Path):
+        result = discover_modalities(flat_layout, domain="D012-2019")
+        assert len(result) == 2
+        assert Modality.AERIAL_RGBI in result
+        assert Modality.DEM_ELEV in result
+
+    def test_discover_without_domain_finds_all(self, flat_layout: Path):
+        """Without a domain filter, both domains' dirs match -- last wins."""
+        result = discover_modalities(flat_layout)
+        # Both D006 and D012 have AERIAL_RGBI; the alphabetically last
+        # (D012-2019_AERIAL_RGBI) will overwrite D006's entry.
+        assert Modality.AERIAL_RGBI in result
+        # But SPOT_RGBI only exists for D006.
+        assert Modality.SPOT_RGBI in result
+
+    def test_discover_nonexistent_domain_empty(self, flat_layout: Path):
+        result = discover_modalities(flat_layout, domain="D999-9999")
+        assert result == {}
+
+    def test_extract_domain_prefix_normal(self):
+        assert _extract_domain_prefix("D006-2020_AERIAL_RGBI") == "D006-2020"
+
+    def test_extract_domain_prefix_historical(self):
+        assert _extract_domain_prefix("D006-195X_AERIAL-RLT_PAN") == "D006-195X"
+
+    def test_extract_domain_prefix_no_underscore(self):
+        assert _extract_domain_prefix("GLOBAL_ALL_MTD") is None  # "GLOBAL" has no dash
+
+    def test_extract_domain_prefix_no_dash(self):
+        assert _extract_domain_prefix("foobar") is None
+
+    def test_infer_domain_from_dir_path(self):
+        assert (
+            infer_domain_from_dir("/data/FLAIR-HUB/D006-2020_AERIAL_RGBI")
+            == "D006-2020"
+        )
+
+    def test_infer_domain_from_dir_none_for_generic(self):
+        assert infer_domain_from_dir("/data/some_random_dir") is None
 
 
 # =========================================================================

@@ -1,5 +1,5 @@
 # Example scenario: Find a target in D006 (Isère), ROI UU-S2-1
-# This scenario uses FLAIR-HUB_TOY data.
+# The data_dir is relative to the --data-root passed to the server.
 
 scenario_id: find_target_D006
 name: Find target in Isère
@@ -9,7 +9,8 @@ description: >
   the ROI and must fly south to find the target.
 
 dataset:
-  data_dir: FLAIR-HUB_TOY/D006-2020_AERIAL_RGBI
+  data_dir: D006-2020_AERIAL_RGBI
+  domain: D006-2020
   roi: UU-S2-1
 
 start:

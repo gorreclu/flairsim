@@ -3,9 +3,15 @@ CLI entry point for the FlairSim HTTP server.
 
 Usage::
 
+    # Free flight (single or multi-modality)
     flairsim-server --data-dir path/to/D004-2021_AERIAL_RGBI
-    flairsim-server --data-dir path/to/data --port 8080 --roi AA-S1-32
-    flairsim-server --data-dir path/to/data --scenarios-dir scenarios/ --scenario find_target_D006
+    flairsim-server --data-dir path/to/D006-2020 --port 8080 --roi UU-S2-1
+
+    # Flat FLAIR-HUB layout with --domain
+    flairsim-server --data-dir path/to/FLAIR-HUB --domain D006-2020
+
+    # Scenario mode (--data-dir not needed, resolved from --data-root + scenario YAML)
+    flairsim-server --data-root path/to/FLAIR-HUB --scenarios-dir scenarios/ --scenario find_target_D006
 """
 
 from __future__ import annotations
@@ -24,8 +30,12 @@ def main(argv: list[str] | None = None) -> None:
 
     parser.add_argument(
         "--data-dir",
-        required=True,
-        help="Path to FLAIR-HUB data directory (e.g. D004-2021_AERIAL_RGBI).",
+        default=None,
+        help=(
+            "Path to FLAIR-HUB data directory (single modality like "
+            "D004-2021_AERIAL_RGBI, or parent directory for multi-modality). "
+            "Required for free flight; optional when --scenario is used."
+        ),
     )
     parser.add_argument(
         "--host",
@@ -85,6 +95,16 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Root directory for resolving relative data_dir paths in "
             "scenarios. Defaults to current working directory."
+        ),
+    )
+    parser.add_argument(
+        "--domain",
+        default=None,
+        help=(
+            "FLAIR-HUB domain prefix (e.g. D006-2020). Required when "
+            "--data-dir points to a flat FLAIR-HUB root with multiple "
+            "domains as siblings. When --data-dir points to a single "
+            "modality directory, the domain is inferred automatically."
         ),
     )
     parser.add_argument(
@@ -159,8 +179,20 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(1)
 
+    # --- Validate: --data-dir is required unless a scenario provides it ---
+    if not args.data_dir and not args.scenario:
+        parser.error(
+            "--data-dir is required for free flight. "
+            "In scenario mode, the data path is resolved from "
+            "--data-root + the scenario's dataset.data_dir."
+        )
+
+    # In scenario mode without --data-dir, use a placeholder; create_app
+    # will override it from the scenario's dataset.data_dir.
+    effective_data_dir = args.data_dir or ""
+
     app = create_app(
-        data_dir=args.data_dir,
+        data_dir=effective_data_dir,
         roi=args.roi,
         max_steps=args.max_steps,
         drone_config=drone_config,
@@ -169,6 +201,7 @@ def main(argv: list[str] | None = None) -> None:
         scenario_loader=scenario_loader,
         scenario_id=args.scenario,
         grid=args.grid,
+        domain=args.domain,
     )
 
     logging.getLogger(__name__).info(

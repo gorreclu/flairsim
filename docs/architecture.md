@@ -89,7 +89,7 @@ and provides auto-discovery of available modalities in a data root.
   converts to channel-last `(H, W, 3)` for display.
 
 - **Multi-modality auto-detection**: `discover_modalities()` scans a data
-  root directory (e.g. `FLAIR-HUB_TOY/D006/`) for subdirectories whose
+  root directory (e.g. `D006-2020/`) for subdirectories whose
   names match known FLAIR-HUB suffixes (`_AERIAL_RGBI`, `_S2_RGBI`,
   `_DEM_ELEV`, etc.).  Retro-compatibility is maintained: if a single
   modality directory is passed (old `--data-dir` usage), it is detected
@@ -374,7 +374,7 @@ scenario_id: find_target_D006
 name: Find the industrial building
 description: Locate the large warehouse in zone D006.
 dataset:
-  data_dir: FLAIR-HUB_TOY/D006-2018_AERIAL_RGBI
+  data_dir: D006-2020_AERIAL_RGBI
   roi: null
 start:
   x: 800100.0

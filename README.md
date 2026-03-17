@@ -27,7 +27,7 @@ telemetry).
 | **Interactive viewer** | Pygame-based desktop viewer with HUD, minimap, and three modes (local / observe / fly) |
 | **SSE push channel** | `GET /events` streams observations to observer viewers in real time |
 | **Telemetry logging** | Full flight log with position, displacement, clipping info |
-| **Well tested** | 428 tests (unit + integration + server + SSE), all passing |
+| **Well tested** | 438 tests (unit + integration + server + SSE), all passing |
 
 ---
 
@@ -112,13 +112,18 @@ uv sync --all-extras
 uv run python -m flairsim.server --data-dir path/to/D004-2021_AERIAL_RGBI
 
 # Multi-modality: parent directory (auto-discovers all modalities)
-uv run python -m flairsim.server --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+uv run python -m flairsim.server --data-dir path/to/D006-2020
 
-# With scenarios
+# Flat FLAIR-HUB layout (data downloaded from HuggingFace):
+# Use --domain to select which domain to load from the flat root
 uv run python -m flairsim.server \
-    --data-dir path/to/data \
+    --data-dir path/to/FLAIR-HUB \
+    --domain D006-2020
+
+# With scenarios (no --data-dir needed; data resolved from --data-root + scenario YAML)
+uv run python -m flairsim.server \
+    --data-root path/to/FLAIR-HUB \
     --scenarios-dir scenarios/ \
-    --data-root /data/FLAIR-HUB \
     --scenario find_target_D006
 
 # With grid overlay (4x4 grid)
@@ -140,8 +145,9 @@ is available at `http://127.0.0.1:8000/docs` (Swagger UI).
 **Full CLI options:**
 
 ```
-uv run python -m flairsim.server --data-dir <PATH> [OPTIONS]
+uv run python -m flairsim.server [OPTIONS]
 
+  --data-dir      Path to data directory (required for free flight, optional with --scenario)
   --host          Host to bind (default: 127.0.0.1)
   --port          Port (default: 8000)
   --roi           ROI to load (default: auto-select largest)
@@ -152,7 +158,8 @@ uv run python -m flairsim.server --data-dir <PATH> [OPTIONS]
   --no-preload    Don't preload tiles (saves RAM)
   --scenarios-dir Directory containing scenario YAML files
   --data-root     Root for resolving relative scenario data_dir paths
-  --scenario      Scenario ID to load at startup
+  --domain        FLAIR-HUB domain prefix (e.g. D006-2020) for flat layout
+  --scenario      Scenario ID to load at startup (no --data-dir needed)
   --grid N        Enable NxN grid overlay (overridable per-request via ?grid=N)
   -v              Debug logging
 ```
@@ -271,7 +278,7 @@ Fly the drone manually with keyboard controls, using a local simulator
 uv run python -m flairsim.viewer --data-dir path/to/D004-2021_AERIAL_RGBI
 
 # Multi-modality (auto-discovers all modalities)
-uv run python -m flairsim.viewer --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+uv run python -m flairsim.viewer --data-dir path/to/D006-2020
 
 # With grid overlay
 uv run python -m flairsim.viewer --data-dir path/to/data --grid 4
@@ -336,7 +343,8 @@ description: >
   a specific ground target.
 
 dataset:
-  data_dir: FLAIR-HUB_TOY/D006-2020_AERIAL_RGBI
+  data_dir: D006-2020_AERIAL_RGBI
+  domain: D006-2020     # optional: inferred from data_dir if omitted
   roi: UU-S2-1
 
 start:
@@ -355,6 +363,7 @@ max_steps: 200
 **Fields**:
 - `scenario_id` -- Unique ID (must match the YAML filename stem)
 - `dataset.data_dir` -- Path to data (absolute or relative to `--data-root`)
+- `dataset.domain` -- FLAIR-HUB domain prefix (e.g. `D006-2020`); optional, inferred from `data_dir` if omitted. Needed for flat layouts to discover sibling modalities
 - `dataset.roi` -- ROI to load (`null` = auto-select)
 - `start` -- Drone starting position (`null` values use map centre / default altitude)
 - `target` -- Target position with acceptance `radius` in metres
@@ -376,9 +385,14 @@ directory or a parent directory containing multiple modalities:
 # Single modality (backward-compatible)
 --data-dir path/to/D006-2020_AERIAL_RGBI
 
-# Multi-modality (auto-discovers all sub-directories)
---data-dir path/to/FLAIR-HUB_TOY/D006-2018/
-  -> discovers: AERIAL_RGBI, DEM_ELEV, SPOT_RGBI, SENTINEL2_TS, ...
+# Multi-modality from single-modality dir (auto-discovers siblings in parent dir)
+--data-dir path/to/FLAIR-HUB/D006-2020_AERIAL_RGBI
+  -> primary: AERIAL_RGBI
+  -> also discovers: DEM_ELEV, SPOT_RGBI, SENTINEL2_TS, ... (sibling D006-2020_* dirs)
+
+# Flat FLAIR-HUB layout (data from HuggingFace): use --domain to filter
+--data-dir path/to/FLAIR-HUB --domain D006-2020
+  -> discovers: all D006-2020_* modality dirs
 ```
 
 In multi-modality mode:
@@ -464,6 +478,53 @@ When `done=true`, the `result` field contains:
 FlairSim uses the [FLAIR-HUB](https://arxiv.org/abs/2506.07080) dataset published by
 IGN (Institut national de l'information geographique et forestiere).
 
+### Downloading data from HuggingFace
+
+The full FLAIR-HUB dataset is hosted on HuggingFace:
+[IGNF/FLAIR-HUB](https://huggingface.co/datasets/IGNF/FLAIR-HUB) (~720 GB total).
+
+**Option 1: Official GUI download tool** (recommended for selecting specific domains/modalities)
+
+```bash
+# Download the official download script
+wget https://huggingface.co/datasets/IGNF/FLAIR-HUB/resolve/main/flair-hub-HF-dl.py
+
+# Run it (requires: pip install huggingface_hub)
+python flair-hub-HF-dl.py
+# A GUI opens; select the domains/modalities you want and click Download.
+# Data is downloaded to ./FLAIR-HUB_download/ by default.
+```
+
+**Option 2: Direct download with `huggingface_hub`**
+
+```python
+from huggingface_hub import hf_hub_download
+
+# Download a single domain/modality ZIP
+hf_hub_download(
+    repo_id="IGNF/FLAIR-HUB",
+    repo_type="dataset",
+    filename="data/D006-2020_AERIAL_RGBI_IMS.zip",
+    local_dir="./FLAIR-HUB",
+)
+# Unzip, then point FlairSim at the result:
+# flairsim-server --data-dir ./FLAIR-HUB/D006-2020_AERIAL_RGBI
+```
+
+**Option 3: Use the toy dataset** (for development/testing)
+
+If you have the `FLAIR-HUB_TOY` subset locally, point directly at it:
+
+```bash
+uv run python -m flairsim.server \
+    --data-dir /path/to/FLAIR-HUB_TOY/D006-2020_AERIAL_RGBI
+
+# Or with multi-modality (all D006-2020 modalities):
+uv run python -m flairsim.server \
+    --data-dir /path/to/FLAIR-HUB_TOY \
+    --domain D006-2020
+```
+
 ### Supported modalities
 
 | Modality | Suffix | Resolution | Bands | Type |
@@ -483,27 +544,31 @@ All modalities cover exactly 102.4m x 102.4m per patch.
 
 ### Data structure
 
-```
-# Single modality
-D004-2021_AERIAL_RGBI/
-  ROI_0001/
-    D004_AERIAL_RGBI_ROI_0001_000-000.tif
-    D004_AERIAL_RGBI_ROI_0001_000-001.tif
-    ...
+FLAIR-HUB data (whether downloaded from HuggingFace or locally available)
+uses a **flat layout**: all domain x modality directories are siblings:
 
-# Parent directory (multi-modality)
-FLAIR-HUB_TOY/D006-2018/
-  D006-2018_AERIAL_RGBI/
+```
+FLAIR-HUB/                              # <-- --data-dir or --data-root points here
+  D006-2020_AERIAL_RGBI/                # domain=D006-2020, modality=AERIAL_RGBI
     UU-S2-1/
       D006_AERIAL_RGBI_UU-S2-1_000-000.tif
       ...
-  D006-2018_DEM_ELEV/
-    UU-S2-1/
-      D006_DEM_ELEV_UU-S2-1_000-000.tif
+    FF-S1-14/
       ...
-  D006-2018_SPOT_RGBI/
+  D006-2020_DEM_ELEV/                   # same domain, different modality
+    UU-S2-1/
+      ...
+  D006-2020_SPOT_RGBI/
     ...
+  D012-2019_AERIAL_RGBI/                # different domain, same level
+    ...
+  D012-2019_DEM_ELEV/
+    ...
+  GLOBAL_ALL_MTD/                       # metadata (ignored by simulator)
 ```
+
+Use `--domain D006-2020` (or the scenario's `dataset.domain` field) to
+select which domain's modalities to load from a flat root.
 
 Each patch is a 512 x 512 pixel GeoTIFF in EPSG:2154 (Lambert-93) covering
 102.4m x 102.4m at 0.2 m/px (for AERIAL_RGBI).  Patches within a ROI form
@@ -530,7 +595,7 @@ Formula: `footprint = 2 * altitude * tan(FOV/2)`, GSD = footprint / image_size.
 ## Running the tests
 
 ```bash
-uv run pytest            # 428 tests, ~5s
+uv run pytest            # 438 tests, ~6s
 uv run pytest -v         # verbose
 uv run pytest tests/test_server.py  # server + SSE tests
 uv run pytest tests/test_grid.py    # grid overlay tests
@@ -573,7 +638,7 @@ simulateur/
   scenarios/                 # Scenario YAML files
     find_target_D006.yaml    # Example scenario
     quick_explore_D012.yaml  # Example scenario
-  tests/                     # 428 tests (13 files)
+  tests/                     # 438 tests (13 files)
   docs/                      # Technical documentation
   pyproject.toml             # Package config (uv/hatchling)
 ```

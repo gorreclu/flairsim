@@ -42,6 +42,7 @@ from ..map.map_manager import MapManager
 from ..map.modality import (
     Modality,
     discover_modalities,
+    infer_domain_from_dir,
     is_single_modality_dir,
     pick_primary_modality,
 )
@@ -115,15 +116,23 @@ class FlairSimulator:
 
         * A **single-modality** directory (e.g. ``D004-2021_AERIAL_RGBI``)
           containing GeoTIFF tiles directly -- backward-compatible mode.
-        * A **parent directory** containing multiple modality sub-dirs
-          (e.g. ``FLAIR-HUB_TOY/D006-2018/``) -- the simulator will
-          auto-discover all modalities and load one ``MapManager`` per
-          modality.
+          Sibling modalities will be auto-discovered in the parent dir.
+        * A **flat FLAIR-HUB root** directory containing modality sub-dirs
+          for multiple domains (e.g. ``FLAIR-HUB/``) -- use *domain* to
+          select which domain to load.
+        * A **parent directory** containing modality sub-dirs for a single
+          domain -- the simulator will auto-discover all modalities.
 
     config : SimulatorConfig or None
         Full configuration.  ``None`` uses defaults.
     scenario : Scenario or None
         If set, the simulator runs in scenario mode.
+    domain : str or None
+        FLAIR-HUB domain prefix (e.g. ``"D006-2020"``).  When the data
+        directory has a flat layout with multiple domains as siblings,
+        this is **required** to select which domain's modalities to load.
+        When *data_dir* points to a single modality directory, the domain
+        is inferred from the directory name if not provided.
 
     Attributes
     ----------
@@ -150,10 +159,12 @@ class FlairSimulator:
         data_dir: str | Path,
         config: Optional[SimulatorConfig] = None,
         scenario: Optional[Scenario] = None,
+        domain: Optional[str] = None,
     ) -> None:
         self._config = config or SimulatorConfig()
         self._data_dir = Path(data_dir).resolve()
         self._scenario = scenario
+        self._domain = domain
 
         # If a scenario is active, override max_steps from the scenario.
         if scenario is not None:
@@ -167,13 +178,14 @@ class FlairSimulator:
         self.primary_modality: Optional[str] = None
 
         if is_single_modality_dir(self._data_dir):
-            # Legacy single-modality mode: one MapManager, no modality key.
+            # Single-modality mode: the user pointed directly at a modality
+            # directory (e.g. D006-2020_AERIAL_RGBI/).
+            # Also try to discover sibling modalities in the parent dir.
             mm = MapManager(
                 data_dir=self._data_dir,
                 roi=self._config.roi,
                 preload=self._config.preload_tiles,
             )
-            # Try to identify the modality from the directory name.
             mod_name = self._detect_modality_name(self._data_dir)
             if mod_name:
                 self.map_managers[mod_name] = mm
@@ -182,14 +194,50 @@ class FlairSimulator:
                 self.map_managers["default"] = mm
                 self.primary_modality = "default"
             self.map_manager = mm
+
+            # Try auto-discovering sibling modalities in the parent directory
+            # using the inferred domain prefix.
+            inferred_domain = domain or infer_domain_from_dir(self._data_dir)
+            if inferred_domain and self._data_dir.parent.is_dir():
+                siblings = discover_modalities(
+                    self._data_dir.parent, domain=inferred_domain
+                )
+                for mod, mod_path in siblings.items():
+                    if mod.name not in self.map_managers:
+                        try:
+                            sibling_mm = MapManager(
+                                data_dir=mod_path,
+                                roi=self._config.roi,
+                                preload=self._config.preload_tiles,
+                            )
+                            self.map_managers[mod.name] = sibling_mm
+                        except Exception as exc:
+                            logger.warning(
+                                "Skipping sibling modality %s: %s",
+                                mod.name,
+                                exc,
+                            )
+                if len(self.map_managers) > 1:
+                    logger.info(
+                        "Auto-discovered %d sibling modalities for domain %s",
+                        len(self.map_managers) - 1,
+                        inferred_domain,
+                    )
         else:
             # Parent directory mode: auto-discover modalities.
-            discovered = discover_modalities(self._data_dir)
+            # Use the domain filter if provided.
+            effective_domain = domain
+            if not effective_domain:
+                # Try to infer domain from the data_dir name itself.
+                effective_domain = infer_domain_from_dir(self._data_dir)
+
+            discovered = discover_modalities(self._data_dir, domain=effective_domain)
             if not discovered:
                 raise ValueError(
-                    f"No FLAIR-HUB modalities found in {self._data_dir}. "
-                    "Pass a single-modality directory or a parent directory "
-                    "containing modality sub-directories."
+                    f"No FLAIR-HUB modalities found in {self._data_dir}"
+                    + (f" for domain '{effective_domain}'" if effective_domain else "")
+                    + ". Pass a single-modality directory, or a parent directory "
+                    "containing modality sub-directories (with --domain if needed)."
                 )
 
             primary_mod = pick_primary_modality(discovered)

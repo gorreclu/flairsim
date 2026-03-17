@@ -37,7 +37,7 @@ pour toute l'equipe.
 | Installer sans viewer | `uv sync --extra server --dev` |
 | Lancer les tests | `uv run pytest` |
 | Lancer le serveur | `uv run python -m flairsim.server --data-dir path/to/data` |
-| Lancer le serveur (multi-modality) | `uv run python -m flairsim.server --data-root path/to/D006 --scenarios-dir scenarios/` |
+| Lancer le serveur (scenario) | `uv run python -m flairsim.server --data-root path/to/FLAIR-HUB --scenarios-dir scenarios/ --scenario find_target_D006` |
 | Lancer le viewer | `uv run python -m flairsim.viewer --data-dir path/to/data` |
 | Lancer le viewer (avec grille) | `uv run python -m flairsim.viewer --data-dir path/to/data --grid 4` |
 | Ajouter une dependance | `uv add <package>` |
@@ -222,7 +222,7 @@ scenario_id: my_scenario_name
 name: Human-readable name
 description: What the agent should do.
 dataset:
-  data_dir: FLAIR-HUB_TOY/D006-2018_AERIAL_RGBI
+  data_dir: D006-2020_AERIAL_RGBI
   roi: null
 start:
   x: 800100.0

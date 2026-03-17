@@ -9,7 +9,8 @@ description: >
   a good scenario for testing and debugging.
 
 dataset:
-  data_dir: FLAIR-HUB_TOY/D012-2019_AERIAL_RGBI
+  data_dir: D012-2019_AERIAL_RGBI
+  domain: D012-2019
   roi: null  # auto-select largest ROI
 
 start:

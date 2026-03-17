@@ -13,7 +13,8 @@ YAML format
     name: Find the industrial building
     description: Locate the large warehouse in zone D006.
     dataset:
-      data_dir: FLAIR-HUB_TOY/D006-2018_AERIAL_RGBI
+      data_dir: D006-2020_AERIAL_RGBI
+      domain: D006-2020     # optional, inferred from data_dir if omitted
       roi: null  # auto-select largest
     start:
       x: 800100.0
@@ -52,10 +53,16 @@ class ScenarioDataset:
         Path to the data directory, relative to the data root.
     roi : str or None
         Specific ROI to load.  ``None`` auto-selects the largest.
+    domain : str or None
+        FLAIR-HUB domain prefix (e.g. ``"D006-2020"``).  When the
+        data root has a flat layout with multiple domains, this tells
+        the simulator which domain's modalities to load.  If ``None``,
+        the domain is inferred from *data_dir*.
     """
 
     data_dir: str
     roi: Optional[str] = None
+    domain: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +169,7 @@ class Scenario:
             "dataset": {
                 "data_dir": self.dataset.data_dir,
                 "roi": self.dataset.roi,
+                "domain": self.dataset.domain,
             },
             "start": {
                 "x": self.start.x,
@@ -225,6 +233,7 @@ def _parse_scenario(data: Dict, source: str = "<unknown>") -> Scenario:
     dataset = ScenarioDataset(
         data_dir=ds_raw["data_dir"],
         roi=ds_raw.get("roi"),
+        domain=ds_raw.get("domain"),
     )
 
     # --- start ---

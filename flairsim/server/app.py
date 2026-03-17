@@ -335,6 +335,7 @@ def create_app(
     scenario_loader: Optional[ScenarioLoader] = None,
     scenario_id: Optional[str] = None,
     grid: Optional[int] = None,
+    domain: Optional[str] = None,
 ) -> FastAPI:
     """Create a FastAPI application wrapping a FlairSimulator.
 
@@ -359,6 +360,9 @@ def create_app(
     grid : int or None
         Default grid overlay size (NxN).  ``None`` disables the grid.
         Can be overridden per-request via the ``grid`` query parameter.
+    domain : str or None
+        FLAIR-HUB domain prefix (e.g. ``"D006-2020"``).  Passed through
+        to the simulator for domain-aware modality discovery.
 
     Returns
     -------
@@ -370,12 +374,16 @@ def create_app(
 
     # Load initial scenario if specified.
     initial_scenario: Optional[Scenario] = None
+    effective_domain = domain
     if scenario_id and scenario_loader:
         initial_scenario = scenario_loader.get(scenario_id)
         # Override data_dir and roi from the scenario.
         data_dir = scenario_loader.resolve_data_dir(initial_scenario)
         roi = initial_scenario.dataset.roi
         max_steps = initial_scenario.max_steps
+        # Use domain from scenario if not explicitly provided via CLI.
+        if not effective_domain and initial_scenario.dataset.domain:
+            effective_domain = initial_scenario.dataset.domain
 
     config = SimulatorConfig(
         drone_config=_drone_config,
@@ -385,7 +393,12 @@ def create_app(
         preload_tiles=preload_tiles,
     )
 
-    sim = FlairSimulator(data_dir=data_dir, config=config, scenario=initial_scenario)
+    sim = FlairSimulator(
+        data_dir=data_dir,
+        config=config,
+        scenario=initial_scenario,
+        domain=effective_domain,
+    )
 
     # Mutable state: the active simulator and scenario can change when
     # /reset is called with a scenario_id.
@@ -474,6 +487,7 @@ def create_app(
                 )
 
             new_data_dir = scenario_loader.resolve_data_dir(new_scenario)
+            new_domain = new_scenario.dataset.domain or domain
             new_config = SimulatorConfig(
                 drone_config=_drone_config,
                 camera_config=_camera_config,
@@ -486,6 +500,7 @@ def create_app(
                 data_dir=new_data_dir,
                 config=new_config,
                 scenario=new_scenario,
+                domain=new_domain,
             )
             state.current_scenario = new_scenario
             logger.info("Loaded scenario: %s", new_scenario.scenario_id)

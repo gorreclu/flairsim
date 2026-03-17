@@ -558,7 +558,7 @@ All modalities cover exactly 102.4m x 102.4m per patch.
 ```python
 from flairsim import discover_modalities, Modality
 
-mods = discover_modalities("FLAIR-HUB_TOY/D006-2018")
+mods = discover_modalities("path/to/D006-2020")
 # {Modality.AERIAL_RGBI: Path(...), Modality.DEM_ELEV: Path(...), ...}
 ```
 
@@ -652,7 +652,7 @@ The viewer supports three modes:
 uv run python -m flairsim.viewer --data-dir path/to/D004-2021_AERIAL_RGBI
 
 # Multi-modality local mode
-uv run python -m flairsim.viewer --data-dir path/to/FLAIR-HUB_TOY/D006-2018
+uv run python -m flairsim.viewer --data-dir path/to/D006-2020
 
 # With grid overlay
 uv run python -m flairsim.viewer --data-dir path/to/data --grid 4
@@ -842,11 +842,10 @@ Returns a `FastAPI` instance ready to be served with uvicorn.
 # Recommended (works everywhere, including macOS editable installs)
 uv run python -m flairsim.server --data-dir path/to/D004-2021_AERIAL_RGBI
 
-# With scenarios and grid
+# With scenarios and grid (no --data-dir needed; data resolved from --data-root)
 uv run python -m flairsim.server \
-    --data-dir path/to/data \
+    --data-root path/to/FLAIR-HUB \
     --scenarios-dir scenarios/ \
-    --data-root /data/FLAIR-HUB \
     --scenario find_target_D006 \
     --grid 4
 
