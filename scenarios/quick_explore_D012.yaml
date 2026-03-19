@@ -1,4 +1,4 @@
-# Example scenario: Quick exploration in D012
+# Scenario: Quick exploration in D012
 # A shorter scenario with a nearby target for testing.
 
 scenario_id: quick_explore_D012
@@ -11,16 +11,35 @@ description: >
 dataset:
   data_dir: D012-2019_AERIAL_RGBI
   domain: D012-2019
-  roi: null  # auto-select largest ROI
+  roi: AF-S1-27
+  modalities:
+    - AERIAL_RGBI
+  source: local
 
 start:
-  x: null   # use map centre
-  y: null
+  x: 687050.0
+  y: 6352430.0
   z: 100.0
 
 target:
-  x: 1018400.0
-  y: 6278400.0
+  x: 686850.0
+  y: 6352130.0
   radius: 30.0
 
+environment:
+  - rural
+
+difficulty: 1
+
 max_steps: 100
+
+prompt:
+  system: |
+    You are an autonomous drone navigation agent flying over aerial
+    imagery of the Aveyron department in France.  Explore the area
+    and locate the ground target.  Respond with a JSON action:
+    {"dx": <float>, "dy": <float>, "dz": <float>,
+    "action_type": "move|found|stop", "reasoning": "<brief explanation>"}.
+  user_template: |
+    Position: ({x}, {y}, {z}).  Step {step}/{max_steps}.
+    Distance traveled: {distance}m.  Find the target.

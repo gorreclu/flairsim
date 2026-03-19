@@ -50,6 +50,8 @@ class TelemetryRecord:
         Whether any component of the displacement was clipped.
     metadata : dict
         Arbitrary extra data (e.g. agent confidence, label at position).
+    reason : str or None
+        AI agent's reasoning for this step.  ``None`` for human players.
     """
 
     step: int
@@ -62,6 +64,7 @@ class TelemetryRecord:
     ground_footprint: float
     was_clipped: bool
     metadata: Dict[str, object] = field(default_factory=dict)
+    reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +192,7 @@ class FlightLog:
             "dz",
             "ground_footprint",
             "was_clipped",
+            "reason",
         ]
 
         with open(filepath, "w", newline="", encoding="utf-8") as f:

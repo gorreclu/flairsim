@@ -610,6 +610,22 @@ class FlairViewer:
         )
         self._screen.blit(scaled, (0, 0))
 
+        # Draw drone center reticle.
+        cx = self._config.window_width // 2
+        cy = self._config.window_height // 2
+        reticle_color = (255, 255, 255, 200)
+        r, gap, length = 8, 4, 14
+        # Use a temporary surface for alpha blending.
+        overlay = pygame.Surface(
+            (self._config.window_width, self._config.window_height), pygame.SRCALPHA
+        )
+        pygame.draw.circle(overlay, reticle_color, (cx, cy), r, 2)
+        pygame.draw.line(overlay, reticle_color, (cx - length, cy), (cx - gap, cy), 2)
+        pygame.draw.line(overlay, reticle_color, (cx + gap, cy), (cx + length, cy), 2)
+        pygame.draw.line(overlay, reticle_color, (cx, cy - length), (cx, cy - gap), 2)
+        pygame.draw.line(overlay, reticle_color, (cx, cy + gap), (cx, cy + length), 2)
+        self._screen.blit(overlay, (0, 0))
+
         # Draw grid overlay.
         if self._show_grid and self._grid_overlay is not None:
             self._grid_overlay.draw_on_surface(self._screen)

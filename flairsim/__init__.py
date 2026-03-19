@@ -26,7 +26,7 @@ __version__ = "0.1.0"
 from .core.action import Action, ActionType  # noqa: F401
 from .core.grid import GridConfig, GridOverlay  # noqa: F401
 from .core.observation import EpisodeResult, Observation  # noqa: F401
-from .core.scenario import Scenario, ScenarioLoader, ScenarioTarget  # noqa: F401
+from .core.scenario import Scenario, ScenarioLoader, ScenarioPrompt, ScenarioTarget  # noqa: F401
 from .core.simulator import FlairSimulator, SimulatorConfig  # noqa: F401
 from .drone.camera import CameraConfig, CameraModel  # noqa: F401
 from .drone.drone import Drone, DroneConfig, DroneState  # noqa: F401
@@ -55,6 +55,7 @@ __all__ = [
     "Observation",
     "Scenario",
     "ScenarioLoader",
+    "ScenarioPrompt",
     "ScenarioTarget",
     "SimulatorConfig",
     "TelemetryRecord",

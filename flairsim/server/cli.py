@@ -139,6 +139,17 @@ def main(argv: list[str] | None = None) -> None:
             "Can be overridden per-request via the ?grid=N query parameter."
         ),
     )
+    parser.add_argument(
+        "--smooth-step-size",
+        type=float,
+        default=10.0,
+        metavar="M",
+        help=(
+            "Micro-step size in metres for smooth movement animation. "
+            "A large step is decomposed into micro-steps of approximately "
+            "this size, each broadcast via SSE. Set to 0 to disable (default: 10)."
+        ),
+    )
 
     parser.add_argument(
         "-v",
@@ -199,7 +210,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- Auto-download from HuggingFace if --domain without --data-dir ---
     downloader: Optional["HubDownloader"] = None  # noqa: F821
-    if not args.data_dir and args.domain and not args.scenario:
+    if not args.data_dir and args.domain:
         from ..data.downloader import HubDownloader
 
         modalities = args.modalities or ["AERIAL_RGBI"]
@@ -222,6 +233,18 @@ def main(argv: list[str] | None = None) -> None:
 
         effective_data_dir = str(downloader.data_dir)
         log.info("Data downloaded to: %s", effective_data_dir)
+
+        # When auto-downloading for a scenario, update the scenario
+        # loader's data_root so data_dir resolves to the download dir.
+        if args.scenario and scenario_loader:
+            scenario_loader = ScenarioLoader(
+                scenarios_dir=args.scenarios_dir,
+                data_root=effective_data_dir,
+            )
+            log.info(
+                "Scenario loader rebuilt with data_root=%s",
+                effective_data_dir,
+            )
 
     elif not args.data_dir and not args.scenario:
         # No --data-dir, no --domain, no --scenario: error.
@@ -255,6 +278,7 @@ def main(argv: list[str] | None = None) -> None:
         grid=args.grid,
         domain=args.domain,
         downloader=downloader,
+        smooth_step_size=args.smooth_step_size,
     )
 
     # --- Register signal handlers for cleanup ---

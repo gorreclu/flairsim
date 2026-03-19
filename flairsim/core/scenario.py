@@ -13,9 +13,12 @@ YAML format
     name: Find the industrial building
     description: Locate the large warehouse in zone D006.
     dataset:
-      data_dir: D006-2020_AERIAL_RGBI
-      domain: D006-2020     # optional, inferred from data_dir if omitted
-      roi: null  # auto-select largest
+      data_dir: D006-2020_AERIAL_RGBI   # path relative to data root
+      domain: D006-2020                  # optional, inferred from data_dir
+      roi: null                          # auto-select largest
+      modalities:                        # optional, default ["AERIAL_RGBI"]
+        - AERIAL_RGBI
+      source: auto                       # "local", "huggingface", or "auto"
     start:
       x: 800100.0
       y: 6500200.0
@@ -25,6 +28,11 @@ YAML format
       y: 6500050.0
       radius: 50.0
     max_steps: 200
+    prompt:                              # optional VLM prompt template
+      system: |
+        You are a drone navigation agent...
+      user_template: |
+        Position: ({x}, {y}, {z}). Steps remaining: {steps_remaining}.
 """
 
 from __future__ import annotations
@@ -58,11 +66,20 @@ class ScenarioDataset:
         data root has a flat layout with multiple domains, this tells
         the simulator which domain's modalities to load.  If ``None``,
         the domain is inferred from *data_dir*.
+    modalities : list of str
+        Modality names to load (e.g. ``["AERIAL_RGBI", "DEM_ELEV"]``).
+        Defaults to ``["AERIAL_RGBI"]``.
+    source : str
+        Where to find the data: ``"local"`` (must exist on disk),
+        ``"huggingface"`` (download from HF), or ``"auto"`` (try
+        local first, fall back to HuggingFace download).
     """
 
     data_dir: str
     roi: Optional[str] = None
     domain: Optional[str] = None
+    modalities: List[str] = field(default_factory=lambda: ["AERIAL_RGBI"])
+    source: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +130,26 @@ class ScenarioTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioPrompt:
+    """VLM prompt template for a scenario.
+
+    Attributes
+    ----------
+    system : str
+        System prompt template for the VLM.  Empty string means no
+        system prompt is specified (the agent is free to choose).
+    user_template : str
+        User prompt template with ``{placeholders}`` that are filled
+        at each step.  Available placeholders: ``{x}``, ``{y}``,
+        ``{z}``, ``{steps_remaining}``, ``{distance}``,
+        ``{step}``, ``{max_steps}``.
+    """
+
+    system: str = ""
+    user_template: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Scenario:
     """A complete mission scenario.
 
@@ -132,6 +169,13 @@ class Scenario:
         What the agent must find.
     max_steps : int
         Maximum steps before the episode is terminated.
+    prompt : ScenarioPrompt
+        Optional VLM prompt template.
+    environment : list of str
+        Tags describing the terrain type (e.g. ``["urban"]``,
+        ``["rural", "forest"]``).  Defaults to an empty list.
+    difficulty : int
+        Difficulty level from 1 (easy) to 3 (hard).  Defaults to 1.
     """
 
     scenario_id: str
@@ -143,6 +187,9 @@ class Scenario:
     start: ScenarioStart = field(default_factory=ScenarioStart)
     target: ScenarioTarget = field(default_factory=lambda: ScenarioTarget(x=0.0, y=0.0))
     max_steps: int = 500
+    prompt: ScenarioPrompt = field(default_factory=ScenarioPrompt)
+    environment: List[str] = field(default_factory=list)
+    difficulty: int = 1
 
     def evaluate(self, drone_x: float, drone_y: float) -> bool:
         """Evaluate whether the agent succeeded.
@@ -162,7 +209,7 @@ class Scenario:
 
     def to_dict(self) -> Dict[str, object]:
         """Serialise to a JSON-friendly dictionary."""
-        return {
+        result: Dict[str, object] = {
             "scenario_id": self.scenario_id,
             "name": self.name,
             "description": self.description,
@@ -170,6 +217,8 @@ class Scenario:
                 "data_dir": self.dataset.data_dir,
                 "roi": self.dataset.roi,
                 "domain": self.dataset.domain,
+                "modalities": list(self.dataset.modalities),
+                "source": self.dataset.source,
             },
             "start": {
                 "x": self.start.x,
@@ -182,13 +231,23 @@ class Scenario:
                 "radius": self.target.radius,
             },
             "max_steps": self.max_steps,
+            "environment": list(self.environment),
+            "difficulty": self.difficulty,
         }
+        # Include prompt only if non-empty.
+        if self.prompt.system or self.prompt.user_template:
+            result["prompt"] = {
+                "system": self.prompt.system,
+                "user_template": self.prompt.user_template,
+            }
+        return result
 
     def __repr__(self) -> str:
         return (
             f"Scenario(id={self.scenario_id!r}, name={self.name!r}, "
             f"target=({self.target.x:.0f}, {self.target.y:.0f}), "
-            f"radius={self.target.radius:.0f}m)"
+            f"radius={self.target.radius:.0f}m, "
+            f"difficulty={self.difficulty}, env={self.environment})"
         )
 
 
@@ -230,10 +289,15 @@ def _parse_scenario(data: Dict, source: str = "<unknown>") -> Scenario:
         raise ValueError(
             f"Missing 'dataset.data_dir' in scenario '{scenario_id}': {source}"
         )
+    raw_modalities = ds_raw.get("modalities")
+    if raw_modalities is not None and not isinstance(raw_modalities, list):
+        raw_modalities = [raw_modalities]
     dataset = ScenarioDataset(
         data_dir=ds_raw["data_dir"],
         roi=ds_raw.get("roi"),
         domain=ds_raw.get("domain"),
+        modalities=raw_modalities or ["AERIAL_RGBI"],
+        source=ds_raw.get("source", "auto"),
     )
 
     # --- start ---
@@ -259,6 +323,28 @@ def _parse_scenario(data: Dict, source: str = "<unknown>") -> Scenario:
 
     max_steps = int(data.get("max_steps", 500))
 
+    # --- prompt ---
+    pr_raw = data.get("prompt", {})
+    prompt = ScenarioPrompt(
+        system=pr_raw.get("system", ""),
+        user_template=pr_raw.get("user_template", ""),
+    )
+
+    # --- environment & difficulty ---
+    raw_env = data.get("environment", [])
+    if isinstance(raw_env, str):
+        raw_env = [raw_env]
+    environment: List[str] = list(raw_env) if raw_env else []
+
+    difficulty = int(data.get("difficulty", 1))
+    if difficulty < 1 or difficulty > 3:
+        logger.warning(
+            "Scenario '%s': difficulty=%d out of range [1, 3], clamping.",
+            scenario_id,
+            difficulty,
+        )
+        difficulty = max(1, min(3, difficulty))
+
     return Scenario(
         scenario_id=scenario_id,
         name=name,
@@ -267,6 +353,9 @@ def _parse_scenario(data: Dict, source: str = "<unknown>") -> Scenario:
         start=start,
         target=target,
         max_steps=max_steps,
+        prompt=prompt,
+        environment=environment,
+        difficulty=difficulty,
     )
 
 

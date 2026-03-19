@@ -730,3 +730,238 @@ class TestSSEEvents:
         assert ds_sse["x"] == ds_rest["x"]
         assert ds_sse["y"] == ds_rest["y"]
         assert ds_sse["z"] == ds_rest["z"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: reason field
+# ---------------------------------------------------------------------------
+
+
+class TestStepReason:
+    """Tests for the 'reason' field in step requests and telemetry."""
+
+    def test_step_with_reason(self, client):
+        """POST /step with a reason field is accepted."""
+        client.post("/reset")
+        resp = client.post(
+            "/step",
+            json={"dx": 1.0, "dy": 0.0, "dz": 0.0, "reason": "exploring north"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["step"] == 1
+
+    def test_step_without_reason_still_works(self, client):
+        """POST /step without reason (backward compat)."""
+        client.post("/reset")
+        resp = client.post("/step", json={"dx": 1.0})
+        assert resp.status_code == 200
+
+    def test_reason_in_telemetry(self, client):
+        """POST /step with reason, then GET /telemetry shows reason."""
+        client.post("/reset")
+        client.post(
+            "/step",
+            json={"dx": 2.0, "dy": 1.0, "reason": "moving toward target"},
+        )
+
+        data = client.get("/telemetry").json()
+        records = data["records"]
+        # Record 0 is the reset (no reason), record 1 is the step.
+        assert len(records) >= 2
+        step_record = records[-1]
+        assert step_record["reason"] == "moving toward target"
+
+    def test_reason_null_when_not_provided(self, client):
+        """Telemetry records have null reason when not provided."""
+        client.post("/reset")
+        client.post("/step", json={"dx": 1.0})
+
+        data = client.get("/telemetry").json()
+        records = data["records"]
+        # Both reset and step should have null reason.
+        for rec in records:
+            assert rec["reason"] is None
+
+    def test_multiple_steps_with_reasons(self, client):
+        """Multiple steps each with different reasons are tracked."""
+        client.post("/reset")
+        client.post("/step", json={"dx": 1.0, "reason": "step one"})
+        client.post("/step", json={"dx": 1.0, "reason": "step two"})
+        client.post("/step", json={"dx": 1.0})  # No reason.
+
+        data = client.get("/telemetry").json()
+        records = data["records"]
+        assert records[0]["reason"] is None  # Reset.
+        assert records[1]["reason"] == "step one"
+        assert records[2]["reason"] == "step two"
+        assert records[3]["reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: overview endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestOverview:
+    """Tests for the /overview endpoint."""
+
+    def test_overview_returns_jpeg(self, client):
+        """GET /overview returns a JPEG image."""
+        resp = client.get("/overview")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        # JPEG magic bytes: FF D8 FF
+        assert resp.content[:3] == b"\xff\xd8\xff"
+
+    def test_overview_has_bounds_headers(self, client):
+        """GET /overview returns X-Bounds-* headers."""
+        resp = client.get("/overview")
+        assert resp.status_code == 200
+        assert "x-bounds-xmin" in resp.headers
+        assert "x-bounds-ymin" in resp.headers
+        assert "x-bounds-xmax" in resp.headers
+        assert "x-bounds-ymax" in resp.headers
+        # Check that bounds are valid numbers.
+        x_min = float(resp.headers["x-bounds-xmin"])
+        x_max = float(resp.headers["x-bounds-xmax"])
+        assert x_max > x_min
+
+    def test_overview_custom_size(self, client):
+        """GET /overview?size=256 returns a smaller image."""
+        resp = client.get("/overview?size=256")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+
+    def test_overview_cached(self, client):
+        """Second call to /overview returns the same bytes (cached)."""
+        resp1 = client.get("/overview?size=128")
+        resp2 = client.get("/overview?size=128")
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert resp1.content == resp2.content
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: scenarios with new fields
+# ---------------------------------------------------------------------------
+
+
+class TestScenariosNewFields:
+    """Tests for environment and difficulty fields in /scenarios (server-side)."""
+
+    def test_scenarios_without_loader(self, client):
+        """GET /scenarios without a scenario loader returns empty list."""
+        resp = client.get("/scenarios")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scenarios"] == []
+
+    def test_scenarios_with_loader(self, tile_dir, tmp_path):
+        """GET /scenarios with a loader returns environment and difficulty."""
+        from fastapi.testclient import TestClient
+
+        from flairsim.core.scenario import ScenarioLoader
+        from flairsim.drone.camera import CameraConfig
+        from flairsim.drone.drone import DroneConfig
+
+        # Write a scenario YAML.
+        scenarios_dir = tmp_path / "scenarios"
+        scenarios_dir.mkdir()
+        (scenarios_dir / "test_sc.yaml").write_text(
+            f"""\
+scenario_id: test_sc
+name: Test Scenario
+description: A test
+objective: find_target
+max_steps: 20
+environment:
+  - rural
+  - forest
+difficulty: 3
+dataset:
+  domain: {DOMAIN}
+  data_dir: "{tile_dir}"
+  roi: {ROI}
+start:
+  x: {ORIGIN_X + 10.0}
+  y: {ORIGIN_Y - 10.0}
+  z: 10.0
+target:
+  x: {ORIGIN_X + 20.0}
+  y: {ORIGIN_Y - 20.0}
+  radius: 50.0
+"""
+        )
+
+        loader = ScenarioLoader(scenarios_dir, data_root=tile_dir)
+        app = create_app(
+            data_dir=tile_dir,
+            roi=ROI,
+            max_steps=50,
+            drone_config=DroneConfig(z_min=1.0, z_max=100.0, default_altitude=10.0),
+            camera_config=CameraConfig(fov_deg=90.0, image_size=32),
+            scenario_loader=loader,
+        )
+        tc = TestClient(app)
+
+        resp = tc.get("/scenarios")
+        assert resp.status_code == 200
+        scenarios = resp.json()["scenarios"]
+        assert len(scenarios) == 1
+        sc = scenarios[0]
+        assert sc["scenario_id"] == "test_sc"
+        assert sc["environment"] == ["rural", "forest"]
+        assert sc["difficulty"] == 3
+
+
+# ---------------------------------------------------------------------------
+# GET /snapshot
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshot:
+    """Tests for the /snapshot endpoint (cached last observation)."""
+
+    def test_snapshot_404_before_reset(self, tile_dir):
+        """Before any reset, /snapshot should return 404."""
+        from fastapi.testclient import TestClient
+        from flairsim.drone.camera import CameraConfig
+        from flairsim.drone.drone import DroneConfig
+
+        app = create_app(
+            data_dir=tile_dir,
+            roi=ROI,
+            max_steps=50,
+            drone_config=DroneConfig(z_min=1.0, z_max=100.0, default_altitude=10.0),
+            camera_config=CameraConfig(fov_deg=90.0, image_size=32),
+        )
+        tc = TestClient(app)
+        resp = tc.get("/snapshot")
+        assert resp.status_code == 404
+
+    def test_snapshot_200_after_reset(self, client):
+        """After reset, /snapshot returns 200 with a full observation."""
+        client.post("/reset")
+        resp = client.get("/snapshot")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "image_base64" in data
+        assert "drone_state" in data
+        assert "step" in data
+
+    def test_snapshot_updates_after_step(self, client):
+        """After a step, /snapshot reflects the new position."""
+        client.post("/reset")
+        snap_before = client.get("/snapshot").json()
+
+        client.post("/step", json={"dx": 5.0, "dy": 0.0, "dz": 0.0})
+        snap_after = client.get("/snapshot").json()
+
+        # The drone_state should differ (moved by dx=5)
+        ds_before = snap_before["drone_state"]
+        ds_after = snap_after["drone_state"]
+        assert (
+            ds_after["x"] != ds_before["x"]
+            or ds_after["step_count"] != ds_before["step_count"]
+        )

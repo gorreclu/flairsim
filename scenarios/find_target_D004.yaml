@@ -1,42 +1,43 @@
-# Scenario: Find a target in D006 (Isere), ROI UU-S2-1
-# The data_dir is relative to the --data-root passed to the server.
+# Scenario: Find a target in D004 (Aube), ROI UN-S1-18
+# Full ROI with 150 tiles — good for testing the web platform.
 
-scenario_id: find_target_D006
-name: Find target in Isere
+scenario_id: find_target_D004
+name: Find target in Aube
 description: >
-  Navigate over the Isere department (D006) aerial imagery to locate
-  a specific ground target.  The drone starts at the northern edge of
-  the ROI and must fly south to find the target.
+  Navigate over the Aube department (D004) aerial imagery to locate
+  a specific ground target.  The drone starts in the northwest of
+  the ROI and must fly southeast to find the target.  The full ROI
+  is covered with 150 tiles providing complete aerial coverage.
 
 dataset:
-  data_dir: D006-2020_AERIAL_RGBI
-  domain: D006-2020
-  roi: UU-S2-1
+  data_dir: D004-2021_AERIAL_RGBI
+  domain: D004-2021
+  roi: UN-S1-18
   modalities:
     - AERIAL_RGBI
   source: local
 
 start:
-  x: 1018115.0
-  y: 6278831.0
-  z: 150.0
+  x: 986500.0
+  y: 6369800.0
+  z: 100.0
 
 target:
-  x: 1018730.0
-  y: 6278114.0
-  radius: 50.0
+  x: 987100.0
+  y: 6368900.0
+  radius: 40.0
 
 environment:
   - rural
 
 difficulty: 2
 
-max_steps: 200
+max_steps: 150
 
 prompt:
   system: |
     You are an autonomous drone navigation agent flying over aerial
-    imagery of the Isere department in France.  Your mission is to
+    imagery of the Aube department in France.  Your mission is to
     locate a specific ground target.  At each step you receive a nadir
     aerial image and your current state.  You must respond with a JSON
     action: {"dx": <float>, "dy": <float>, "dz": <float>,

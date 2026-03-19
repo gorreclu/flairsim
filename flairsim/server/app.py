@@ -25,12 +25,13 @@ import asyncio
 import base64
 import io
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from PIL import Image
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -75,6 +76,7 @@ class StepRequest(BaseModel):
     action_type: str = Field(
         "move", description="Action type: 'move', 'found', or 'stop'."
     )
+    reason: Optional[str] = Field(None, description="AI agent reasoning for this step.")
 
 
 class DroneStateResponse(BaseModel):
@@ -131,6 +133,7 @@ class TelemetryRecordResponse(BaseModel):
     dz: float
     ground_footprint: float
     was_clipped: bool
+    reason: Optional[str] = None
 
 
 class TelemetryResponse(BaseModel):
@@ -178,6 +181,8 @@ class ScenarioSummaryResponse(BaseModel):
     description: str
     max_steps: int
     target_radius: float
+    environment: List[str] = []
+    difficulty: int = 1
 
 
 class ScenariosListResponse(BaseModel):
@@ -221,6 +226,47 @@ def _encode_image_png(image: np.ndarray) -> str:
     buffer = io.BytesIO()
     pil_img.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _encode_image_jpeg(image: np.ndarray, quality: int = 85) -> bytes:
+    """Encode a (bands, H, W) array as JPEG bytes.
+
+    Converts to RGB uint8 (H, W, 3) before encoding.  Non-uint8 data
+    is normalised via percentile stretch.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Image array in (bands, H, W) format.
+    quality : int
+        JPEG quality (1-95).
+
+    Returns
+    -------
+    bytes
+        Raw JPEG bytes.
+    """
+    if image.dtype != np.uint8:
+        image = normalize_to_uint8(image)
+
+    if image.ndim == 3 and image.shape[0] >= 3:
+        rgb = np.transpose(image[:3], (1, 2, 0))
+    elif image.ndim == 3 and image.shape[0] == 2:
+        band = image[0]
+        rgb = np.stack([band, band, band], axis=-1)
+    elif image.ndim == 3 and image.shape[0] == 1:
+        band = image[0]
+        rgb = np.stack([band, band, band], axis=-1)
+    elif image.ndim == 2:
+        rgb = np.stack([image, image, image], axis=-1)
+    else:
+        rgb = image
+
+    rgb = rgb.astype(np.uint8)
+    pil_img = Image.fromarray(rgb)
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
 
 
 def _apply_grid_overlay(image: np.ndarray, grid: Optional[GridOverlay]) -> np.ndarray:
@@ -338,6 +384,7 @@ def create_app(
     grid: Optional[int] = None,
     domain: Optional[str] = None,
     downloader: Optional[Any] = None,
+    smooth_step_size: float = 10.0,
 ) -> FastAPI:
     """Create a FastAPI application wrapping a FlairSimulator.
 
@@ -368,6 +415,10 @@ def create_app(
     downloader : HubDownloader or None
         If set, the downloader's :meth:`cleanup` is called on shutdown
         (via the FastAPI lifespan handler) to remove temporary data.
+    smooth_step_size : float
+        Size of micro-steps (metres) for smooth movement animation.
+        A large step is decomposed into micro-steps of approximately
+        this size, each broadcast via SSE.  Set to 0 to disable.
 
     Returns
     -------
@@ -413,17 +464,24 @@ def create_app(
         grid_overlay: Optional[GridOverlay] = (
             GridOverlay(grid) if grid is not None else None
         )
+        overview_cache: Dict[str, bytes] = {}  # scenario_id -> JPEG bytes
+        last_observation: Optional[str] = (
+            None  # cached JSON of last ObservationResponse
+        )
 
     state = _State()
+    _smooth_step_size = smooth_step_size
 
     # SSE subscriber management.
     _subscribers: Set[asyncio.Queue[str]] = set()
 
     def _broadcast(obs_response: ObservationResponse) -> None:
         """Push a serialised observation to all SSE subscribers."""
+        payload = obs_response.model_dump_json()
+        # Always cache last observation for /snapshot (even without subscribers).
+        state.last_observation = payload
         if not _subscribers:
             return
-        payload = obs_response.model_dump_json()
         dead: list[asyncio.Queue[str]] = []
         for q in list(_subscribers):
             try:
@@ -553,6 +611,11 @@ def create_app(
         Applies the given displacement and returns the new observation
         with the updated image and telemetry.
 
+        When ``smooth_step_size > 0``, the movement is decomposed into
+        micro-steps of approximately that size.  Each intermediate frame
+        is broadcast via SSE to viewers, but only the final frame is
+        returned to the caller.
+
         Parameters
         ----------
         grid : int or None
@@ -573,8 +636,66 @@ def create_app(
                 state.grid_overlay = GridOverlay(grid)
 
         action_type = _parse_action_type(body.action_type)
-        action = Action(dx=body.dx, dy=body.dy, dz=body.dz, action_type=action_type)
-        obs = await asyncio.to_thread(state.current_sim.step, action)
+
+        # --- Smooth step decomposition ---
+        total_dist = math.sqrt(body.dx**2 + body.dy**2)
+        do_smooth = (
+            _smooth_step_size > 0
+            and action_type == ActionType.MOVE
+            and total_dist > _smooth_step_size
+        )
+
+        if do_smooth:
+            n_micro = max(2, round(total_dist / _smooth_step_size))
+            micro_dx = body.dx / n_micro
+            micro_dy = body.dy / n_micro
+            micro_dz = body.dz / n_micro
+
+            # Save step count — smooth decomposition should count as ONE
+            # logical step, not N micro-steps.
+            saved_step = state.current_sim._step_count
+            saved_drone_step = state.current_sim.drone.state.step_count
+
+            # Broadcast intermediate frames (all but last).
+            for i in range(n_micro - 1):
+                micro_action = Action(
+                    dx=micro_dx,
+                    dy=micro_dy,
+                    dz=micro_dz,
+                    action_type=ActionType.MOVE,
+                )
+                obs = await asyncio.to_thread(
+                    state.current_sim.step, micro_action, None
+                )
+                # Restore step count — intermediate frames don't count.
+                state.current_sim._step_count = saved_step
+                state.current_sim.drone.state.step_count = saved_drone_step
+                response = _obs_to_response(obs, grid=state.grid_overlay)
+                _broadcast(response)
+                # Pause to let the event loop flush SSE frames to clients,
+                # producing a visible smooth animation (~20 FPS).
+                await asyncio.sleep(0.05)
+
+            # Final micro-step (carries the reason) — this one increments
+            # the step count by exactly 1 from saved_step.
+            final_action = Action(
+                dx=micro_dx,
+                dy=micro_dy,
+                dz=micro_dz,
+                action_type=ActionType.MOVE,
+            )
+            obs = await asyncio.to_thread(
+                state.current_sim.step, final_action, body.reason
+            )
+        else:
+            action = Action(
+                dx=body.dx,
+                dy=body.dy,
+                dz=body.dz,
+                action_type=action_type,
+            )
+            obs = await asyncio.to_thread(state.current_sim.step, action, body.reason)
+
         response = _obs_to_response(obs, grid=state.grid_overlay)
         _broadcast(response)
         return response
@@ -598,6 +719,24 @@ def create_app(
             total_distance=s.total_distance,
         )
 
+    @app.get("/snapshot")
+    def get_snapshot():
+        """Return the last cached observation (full ObservationResponse JSON).
+
+        Returns 404 if no observation has been broadcast yet (i.e. no
+        reset or step has been performed).  Useful for spectators that
+        join mid-session and need the current cockpit image.
+        """
+        if state.last_observation is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No observation available yet.",
+            )
+        return Response(
+            content=state.last_observation,
+            media_type="application/json",
+        )
+
     @app.get("/telemetry", response_model=TelemetryResponse)
     def get_telemetry():
         """Get the full flight log for the current episode."""
@@ -619,6 +758,7 @@ def create_app(
                     dz=r.dz,
                     ground_footprint=r.ground_footprint,
                     was_clipped=r.was_clipped,
+                    reason=r.reason,
                 )
                 for r in log.records
             ],
@@ -680,9 +820,65 @@ def create_app(
                     description=sc.description,
                     max_steps=sc.max_steps,
                     target_radius=sc.target.radius,
+                    environment=list(sc.environment),
+                    difficulty=sc.difficulty,
                 )
             )
         return ScenariosListResponse(scenarios=summaries)
+
+    # ---------------------------------------------------------------- overview
+
+    @app.get("/overview")
+    async def get_overview(size: int = 1024):
+        """Generate a full-ROI overview image of the loaded map.
+
+        Returns a JPEG image covering the entire map extent.  The image
+        is cached after the first call.
+
+        Parameters
+        ----------
+        size : int
+            Output image size in pixels (square).
+        """
+        from fastapi.responses import Response
+
+        cur = state.current_sim
+        bounds = cur.map_bounds
+        bounds_headers = {
+            "X-Bounds-Xmin": str(bounds.x_min),
+            "X-Bounds-Ymin": str(bounds.y_min),
+            "X-Bounds-Xmax": str(bounds.x_max),
+            "X-Bounds-Ymax": str(bounds.y_max),
+        }
+
+        cache_key = f"{id(state.current_sim)}_{size}"
+        if cache_key in state.overview_cache:
+            return Response(
+                content=state.overview_cache[cache_key],
+                media_type="image/jpeg",
+                headers=bounds_headers,
+            )
+
+        # Compute half_extent to cover the entire map.
+        cx, cy = bounds.center
+        half_w = bounds.width / 2.0
+        half_h = bounds.height / 2.0
+        half_extent = max(half_w, half_h)
+
+        # Use get_region on the primary map manager to stitch all tiles.
+        image = await asyncio.to_thread(
+            cur.map_manager.get_region, cx, cy, half_extent, size
+        )
+
+        jpeg_bytes = _encode_image_jpeg(image)
+        state.overview_cache[cache_key] = jpeg_bytes
+
+        # Include bounds in headers for the web client.
+        return Response(
+            content=jpeg_bytes,
+            media_type="image/jpeg",
+            headers=bounds_headers,
+        )
 
     # ---------------------------------------------------------------- SSE
 

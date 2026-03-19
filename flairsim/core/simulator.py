@@ -353,13 +353,16 @@ class FlairSimulator:
 
     # ---------------------------------------------------------------- step
 
-    def step(self, action: Action) -> Observation:
+    def step(self, action: Action, reason: Optional[str] = None) -> Observation:
         """Advance the simulation by one step.
 
         Parameters
         ----------
         action : Action
             The agent's command for this step.
+        reason : str or None
+            AI agent's reasoning for this step.  ``None`` for human
+            players or when no reasoning is provided.
 
         Returns
         -------
@@ -386,6 +389,7 @@ class FlairSimulator:
             dy=move_result.dy_actual,
             dz=move_result.dz_actual,
             was_clipped=move_result.was_clipped,
+            reason=reason,
         )
 
         # --- Check termination conditions ---
@@ -522,6 +526,7 @@ class FlairSimulator:
         dy: float,
         dz: float,
         was_clipped: bool,
+        reason: Optional[str] = None,
     ) -> None:
         """Append a telemetry record for the current state."""
         state = self.drone.state
@@ -535,6 +540,7 @@ class FlairSimulator:
             dz=dz,
             ground_footprint=self.camera.ground_footprint_size(state.z),
             was_clipped=was_clipped,
+            reason=reason,
         )
         self.flight_log.append(record)
 
