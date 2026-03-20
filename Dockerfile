@@ -8,6 +8,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libgdal-dev \
         gdal-bin \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
