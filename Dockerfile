@@ -26,4 +26,4 @@ COPY scenarios/ scenarios/
 EXPOSE 8000
 
 # Launch the orchestrator.
-CMD ["flairsim-web", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["flairsim-web", "--host", "0.0.0.0", "--port", "8000", "--scenarios-dir", "/app/scenarios", "--data-root", "/app/data"]
