@@ -16,21 +16,30 @@ build/
 .pytest_cache/
 .ruff_cache/
 
-# LaTeX – exclure source et artefacts, garder uniquement le PDF
-docs/guide.tex
-docs/*.aux
-docs/*.fdb_latexmk
-docs/*.fls
-docs/*.log
-docs/*.out
-docs/*.synctex.gz
-docs/*.toc
+# Documentation (kept locally, not tracked)
+docs/
+
+# Jupyter
+.ipynb_checkpoints/
 
 # macOS
 .DS_Store
+
+# FLAIR-HUB data (GeoTIFFs, large binary files)
+data/D*
+data/*.db
+
+# Generated overview images
+flairsim/web/static/overviews/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# Internal tool state
+.opencode/
+
+# Environment
+.env

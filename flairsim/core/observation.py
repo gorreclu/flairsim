@@ -59,9 +59,10 @@ class Observation:
     Attributes
     ----------
     image : np.ndarray
-        Camera image with shape ``(bands, H, W)``.  For AERIAL_RGBI,
-        bands are ``[R, G, B, NIR]`` in ``uint8``.  The image is always
-        ``(image_size, image_size)`` regardless of altitude.
+        Camera image with shape ``(bands, H, W)`` for the *primary*
+        modality.  For AERIAL_RGBI, bands are ``[R, G, B, NIR]`` in
+        ``uint8``.  The image is always ``(image_size, image_size)``
+        regardless of altitude.
     drone_state : DroneState
         Current position, heading, and counters.
     step : int
@@ -76,6 +77,11 @@ class Observation:
         Ground sampling distance (metres per pixel).
     metadata : dict
         Arbitrary extra info (scenario name, target description, etc.).
+    images : dict[str, np.ndarray]
+        Per-modality images keyed by modality name (e.g.
+        ``"AERIAL_RGBI"``, ``"DEM_ELEV"``).  Each value has shape
+        ``(bands, H, W)``.  Empty when running in single-modality
+        mode (in that case only ``image`` is populated).
     """
 
     image: np.ndarray = field(repr=False)
@@ -86,6 +92,7 @@ class Observation:
     ground_footprint: float = 0.0
     ground_resolution: float = 0.0
     metadata: Dict[str, object] = field(default_factory=dict)
+    images: Dict[str, np.ndarray] = field(default_factory=dict, repr=False)
 
     # ---------------------------------------------------------------- helpers
 

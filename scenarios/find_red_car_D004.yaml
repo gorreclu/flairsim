@@ -1,0 +1,48 @@
+# Scenario: Find a red car in D004 (Aube), ROI UN-S1-18
+# Full ROI with 150 tiles — good for testing the web platform.
+
+scenario_id: find_red_car_D004
+name: Find red car in Aube
+description: >
+  Navigate over the Aube department (D004) aerial imagery to locate
+  a red car.  The drone starts close to the target area and must
+  search the surroundings to find it.  The full ROI is covered with
+  150 tiles providing complete aerial coverage.
+
+dataset:
+  data_dir: D004-2021_AERIAL_RGBI
+  domain: D004-2021
+  roi: UN-S1-18
+  modalities:
+    - AERIAL_RGBI
+  source: local
+
+start:
+  x: 986699.0
+  y: 6369901.0
+  z: 100.0
+
+target:
+  x: 986607.0
+  y: 6369997.0
+  radius: 40.0
+
+environment:
+  - rural
+
+difficulty: 1
+
+max_steps: 150
+
+prompt:
+  system: |
+    You are an autonomous drone navigation agent flying over aerial
+    imagery of the Aube department in France.  Your mission is to
+    locate a red car on the ground.  At each step you receive a nadir
+    aerial image and your current state.  You must respond with a JSON
+    action: {"dx": <float>, "dy": <float>, "dz": <float>,
+    "action_type": "move|found|stop", "reasoning": "<brief explanation>"}.
+    When you believe you are directly above the target, use "found".
+  user_template: |
+    Position: ({x}, {y}, {z}).  Step {step}/{max_steps}.
+    Distance traveled: {distance}m.  Find the red car.

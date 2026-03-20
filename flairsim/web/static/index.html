@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlairSim Benchmark</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- ============================================================ -->
+    <!-- LANDING / SCENARIO PICKER                                     -->
+    <!-- ============================================================ -->
+    <section id="view-landing" class="view active">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+            </nav>
+        </header>
+
+        <div class="landing-content">
+            <p class="subtitle">Drone navigation benchmark over FLAIR-HUB aerial imagery</p>
+
+            <div id="scenario-grid" class="scenario-grid">
+                <!-- Filled by JS -->
+                <div class="loading-msg">Loading scenarios...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PLAY VIEW                                                     -->
+    <!-- ============================================================ -->
+    <section id="view-play" class="view">
+        <header class="play-bar">
+            <div class="play-bar-left">
+                <button class="btn btn-ghost btn-sm" onclick="exitSession()">&#x2190; Exit</button>
+                <span id="play-scenario-name" class="play-label"></span>
+                <span id="play-mode-badge" class="badge"></span>
+                <span id="play-spectator-badge" class="badge badge-spectator" hidden>SPECTATOR</span>
+            </div>
+            <div class="play-bar-right">
+                <span id="play-status" class="status-dot"></span>
+            </div>
+        </header>
+
+        <div class="play-layout">
+            <div class="canvas-container" id="canvas-container">
+                <div class="scenario-info-bar" id="scenario-info-bar">
+                    <h2 id="play-scenario-title"></h2>
+                    <p id="play-scenario-desc"></p>
+                </div>
+                <div class="cockpit-frame">
+                    <canvas id="main-canvas" width="700" height="700"></canvas>
+                </div>
+            </div>
+
+            <div class="side-panel">
+                <!-- Telemetry panel -->
+                <div class="telemetry-panel" id="telemetry-panel">
+                    <h3>Flight Data</h3>
+                    <div class="telem-row">
+                        <span class="telem-label">Step</span>
+                        <span class="telem-value" id="telem-step">0</span>
+                    </div>
+                    <div class="telem-row">
+                        <span class="telem-label">x</span>
+                        <span class="telem-value" id="telem-x">0</span>
+                    </div>
+                    <div class="telem-row">
+                        <span class="telem-label">y</span>
+                        <span class="telem-value" id="telem-y">0</span>
+                    </div>
+                    <div class="telem-row">
+                        <span class="telem-label">Altitude</span>
+                        <span class="telem-value" id="telem-alt">0 m</span>
+                    </div>
+                    <div class="telem-row">
+                        <span class="telem-label">Distance</span>
+                        <span class="telem-value" id="telem-dist">0 m</span>
+                    </div>
+                    <div class="telem-row">
+                        <span class="telem-label">Time</span>
+                        <span class="telem-value" id="telem-time">0:00</span>
+                    </div>
+                    <div class="telem-row" id="telem-modality-row" hidden>
+                        <span class="telem-label">Modality</span>
+                        <span class="telem-value" id="telem-modality">-</span>
+                    </div>
+                    <div class="telem-status" id="telem-status"></div>
+                </div>
+
+                <div class="minimap-container">
+                    <canvas id="minimap-canvas" width="180" height="180"></canvas>
+                </div>
+
+                <div class="controls-info" id="controls-info">
+                    <h3>Controls</h3>
+                    <div class="control-row"><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+                    <div class="control-row"><kbd>E</kbd> Ascend &nbsp; <kbd>A</kbd> Descend</div>
+                    <div class="control-row"><kbd>+</kbd><kbd>-</kbd> Adjust step size</div>
+                    <div class="control-row"><kbd>Space</kbd> Declare FOUND</div>
+                    <div class="control-row"><kbd>R</kbd> Reset episode</div>
+                    <div class="control-row"><kbd>Tab</kbd> Cycle modality</div>
+                    <div class="control-row"><kbd>H</kbd> Toggle HUD</div>
+                    <div class="control-row"><kbd>M</kbd> Toggle minimap</div>
+                    <div class="control-row click-hint">Click on the map to fly there</div>
+                    <div class="step-size-row">
+                        <label for="step-size-slider">Step: <span id="step-size-value">20</span>m</label>
+                        <input type="range" id="step-size-slider" min="1" max="500" value="20">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- ACTIVE PROCESSES VIEW                                         -->
+    <!-- ============================================================ -->
+    <section id="view-processes" class="view">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+            </nav>
+        </header>
+
+        <div class="processes-content">
+            <h2>Active Processes</h2>
+            <p class="subtitle">Running simulator sessions. Sessions auto-close after 3 minutes of inactivity.</p>
+            <div id="processes-list" class="processes-list">
+                <div class="loading-msg">Loading...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- LEADERBOARD VIEW                                              -->
+    <!-- ============================================================ -->
+    <section id="view-leaderboard" class="view">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+            </nav>
+        </header>
+
+        <div class="leaderboard-content">
+            <h2>Leaderboard</h2>
+            <div class="leaderboard-filters">
+                <label>Scenario
+                    <select id="lb-filter-scenario">
+                        <option value="">All scenarios</option>
+                    </select>
+                </label>
+                <label>Mode
+                    <select id="lb-filter-mode">
+                        <option value="">All modes</option>
+                        <option value="human">Human</option>
+                        <option value="ai">AI</option>
+                    </select>
+                </label>
+            </div>
+            <div id="leaderboard-table-container" class="leaderboard-table-container">
+                <div class="loading-msg">Loading...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RUN DETAIL VIEW                                               -->
+    <!-- ============================================================ -->
+    <section id="view-run-detail" class="view">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Back to Leaderboard</button>
+            </nav>
+        </header>
+
+        <div class="detail-layout">
+            <div class="detail-left">
+                <h2 id="detail-title">Run Detail</h2>
+                <div class="detail-meta" id="detail-meta"></div>
+
+                <div class="overview-container" id="overview-container">
+                    <!-- Overview image + SVG overlay inserted by JS -->
+                    <div class="loading-msg">Loading overview...</div>
+                </div>
+            </div>
+
+            <div class="detail-right">
+                <h3>Steps</h3>
+                <div class="steps-list" id="detail-steps-list">
+                    <!-- Filled by JS -->
+                </div>
+
+                <div class="model-info-card" id="detail-model-info" hidden>
+                    <h4>Model Info</h4>
+                    <div class="model-info-body" id="detail-model-info-body"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RESULTS MODAL                                                 -->
+    <!-- ============================================================ -->
+    <div id="results-modal" class="modal-overlay" hidden>
+        <div class="modal">
+            <div id="results-icon" class="results-icon"></div>
+            <h2 id="results-title"></h2>
+            <p id="results-reason" class="results-reason"></p>
+
+            <div class="results-stats">
+                <div class="stat">
+                    <span class="stat-value" id="stat-steps">--</span>
+                    <span class="stat-label">Steps</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-distance">--</span>
+                    <span class="stat-label">Distance (m)</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="stat-duration">--</span>
+                    <span class="stat-label">Duration (s)</span>
+                </div>
+            </div>
+
+            <div class="results-minimap">
+                <canvas id="results-minimap-canvas" width="200" height="200"></canvas>
+            </div>
+
+            <div class="results-form">
+                <input type="text" id="result-player-name" placeholder="Your name" maxlength="64" />
+                <button class="btn btn-primary" id="btn-submit-run" onclick="submitRun()">Submit to Leaderboard</button>
+            </div>
+
+            <div class="results-actions">
+                <button class="btn btn-ghost" onclick="playAgain()">Play Again</button>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Back to Scenarios</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

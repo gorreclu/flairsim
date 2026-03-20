@@ -1,0 +1,45 @@
+# FlairSim -- Docker Compose for standalone deployment.
+#
+# Usage:
+#   docker compose up -d
+#
+# Prerequisites:
+#   - Place FLAIR-HUB tile data in ./data/ (e.g. D004-2021_AERIAL_RGBI/)
+#   - Create .env with FLAIRSIM_API_KEY=<your-key>
+#
+# For Coolify deployment, only the Dockerfile is needed (Coolify
+# builds the image automatically).  This compose file is for local
+# development or standalone VPS deployment.
+
+services:
+  flairsim:
+    build: .
+    container_name: flairsim
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./scenarios:/app/scenarios
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/scenarios')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional: Nginx reverse proxy with SSL.
+  # Uncomment to use.  Requires SSL certs (see docs/deployment.md).
+  #
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: flairsim-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - flairsim

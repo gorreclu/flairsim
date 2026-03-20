@@ -107,6 +107,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Do not preload tiles into memory (local mode only).",
     )
     parser.add_argument(
+        "--grid",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Enable NxN grid overlay on the viewer (e.g. --grid 4 for a 4x4 grid). "
+            "Press G to toggle the grid on/off during flight."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -167,7 +177,7 @@ def main(argv: list[str] | None = None) -> None:
         sim = FlairSimulator(data_dir=args.data_dir, config=sim_config)
 
         log.info("Starting local viewer (%dx%d)", args.window_size, args.window_size)
-        viewer = FlairViewer(config=viewer_config)
+        viewer = FlairViewer(config=viewer_config, grid=args.grid)
         viewer.run_manual(sim)
 
     # ----- Observe mode -----
@@ -184,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
         log.info("Observing server at %s", args.server_url)
-        viewer = FlairViewer(config=viewer_config)
+        viewer = FlairViewer(config=viewer_config, grid=args.grid)
         viewer.run_remote_observe(args.server_url)
 
     # ----- Fly mode -----
@@ -200,7 +210,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
         log.info("Flying via server at %s", args.server_url)
-        viewer = FlairViewer(config=viewer_config)
+        viewer = FlairViewer(config=viewer_config, grid=args.grid)
         viewer.run_remote_fly(args.server_url)
 
 

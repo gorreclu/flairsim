@@ -151,6 +151,18 @@ class HUD:
         if fps > 0:
             lines.append(f"FPS:  {fps:.0f}")
 
+        # Scenario information from metadata.
+        meta = getattr(obs, "metadata", {})
+        if meta.get("scenario_name"):
+            lines.append("")
+            lines.append(f"Scenario: {meta['scenario_name']}")
+        if meta.get("distance_to_target") is not None:
+            try:
+                d2t = float(meta["distance_to_target"])
+                lines.append(f"To target: {d2t:.0f} m")
+            except (ValueError, TypeError):
+                pass
+
         if obs.done and obs.result is not None:
             lines.append("")
             lines.append(f"DONE: {obs.result.reason}")

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Tests & dev
+tests/
+.pytest_cache/
+.ruff_cache/
+notebooks/
+
+# Data (mounted at runtime)
+data/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Docs source (not needed in image)
+docs/*.tex
+docs/*.aux
+docs/*.log
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.out
+docs/*.synctex.gz
+docs/*.toc
+
+# Overviews (generated at runtime)
+flairsim/web/static/overviews/
+
+# Git / tools
+.git/
+.gitignore
+.opencode/
+.env
