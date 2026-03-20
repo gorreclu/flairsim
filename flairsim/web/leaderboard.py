@@ -221,6 +221,23 @@ class Leaderboard:
             return None
         return self._row_to_dict(row)
 
+    # ---------------------------------------------------------------- delete
+
+    def delete_run(self, run_id: str) -> bool:
+        """Delete a single run by ID.
+
+        Returns
+        -------
+        bool
+            ``True`` if a row was deleted, ``False`` if the ID was not found.
+        """
+        cursor = self._conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        self._conn.commit()
+        deleted = cursor.rowcount > 0
+        if deleted:
+            logger.info("Leaderboard: deleted run %s", run_id)
+        return deleted
+
     # ---------------------------------------------------------------- helpers
 
     @staticmethod

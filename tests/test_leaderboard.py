@@ -29,7 +29,7 @@ def lb(tmp_path):
 
 
 def _make_run(
-    scenario_id="find_target_D006",
+    scenario_id="find_red_car_D004",
     mode="human",
     success=False,
     steps_taken=50,

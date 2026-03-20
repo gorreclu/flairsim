@@ -523,6 +523,15 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Run not found")
         return run
 
+    @app.delete("/api/leaderboard/{run_id}")
+    async def delete_leaderboard_run(run_id: str, request: Request):
+        """Delete a leaderboard run.  Requires admin API key."""
+        _require_api_key(request)
+        deleted = leaderboard.delete_run(run_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return Response(status_code=204)
+
     # Explicit submit endpoint for AI sessions (from notebooks).
     @app.post("/api/leaderboard/submit")
     async def submit_leaderboard_explicit(request: Request):

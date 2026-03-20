@@ -157,7 +157,7 @@ api = httpx.Client(base_url="http://127.0.0.1:8080/api")
 
 # Create AI session
 session = api.post("/sessions", json={
-    "scenario_id": "find_target_D006",
+    "scenario_id": "find_red_car_D004",
     "mode": "ai",
     "player_name": "MyAgent",
 }, headers={"Authorization": f"Bearer {API_KEY}"}).json()
@@ -172,7 +172,7 @@ while not obs["done"]:
 
 # Submit to leaderboard
 api.post("/leaderboard/submit", json={
-    "scenario_id": "find_target_D006",
+    "scenario_id": "find_red_car_D004",
     "mode": "ai",
     "model_name": "MyAgent",
     "success": obs["result"]["success"],
@@ -197,14 +197,14 @@ uv run --with jupyter --with matplotlib jupyter lab notebooks/tutorial.ipynb
 Self-contained YAML missions defining data source, start/target, prompts:
 
 ```yaml
-scenario_id: find_target_D006
-name: Find target in Isere
+scenario_id: find_red_car_D004
+name: Find red car in Aube
 dataset:
-  data_dir: D006-2020_AERIAL_RGBI
-  source: auto
-start: { x: 1018422.0, y: 6278750.0, z: 150.0 }
-target: { x: 1018300.0, y: 6278200.0, radius: 50.0 }
-max_steps: 200
+  data_dir: D004-2021_AERIAL_RGBI
+  source: local
+start: { x: 986699.0, y: 6369901.0, z: 100.0 }
+target: { x: 986607.0, y: 6369997.0, radius: 40.0 }
+max_steps: 150
 prompt:
   system: "You are a drone navigation agent..."
   user_template: "Position: ({x}, {y}, {z}). Step {step}/{max_steps}."

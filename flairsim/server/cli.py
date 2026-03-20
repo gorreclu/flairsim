@@ -15,7 +15,7 @@ Usage::
     flairsim-server --domain D006-2020 --modalities AERIAL_RGBI DEM_ELEV
 
     # Scenario mode (--data-dir not needed, resolved from --data-root + scenario YAML)
-    flairsim-server --data-root path/to/FLAIR-HUB --scenarios-dir scenarios/ --scenario find_target_D006
+    flairsim-server --data-root path/to/FLAIR-HUB --scenarios-dir scenarios/ --scenario find_red_car_D004
 """
 
 from __future__ import annotations

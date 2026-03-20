@@ -1,0 +1,48 @@
+# Scenario: Find a white truck in D006 (Isère), ROI UU-S2-1
+# Urban area in the Isère department — difficulty 2.
+
+scenario_id: find_truck_D006
+name: Find white truck in Isère
+description: >
+  Navigate over the Isère department (D006) aerial imagery to locate
+  a white truck.  The drone starts about 400 metres from the target
+  and must search the urban area to find it.  Difficulty is moderate
+  due to the presence of many vehicles in the scene.
+
+dataset:
+  data_dir: D006-2020_AERIAL_RGBI
+  domain: D006-2020
+  roi: UU-S2-1
+  modalities:
+    - AERIAL_RGBI
+  source: local
+
+start:
+  x: 1018100.0
+  y: 6278500.0
+  z: 150.0
+
+target:
+  x: 1018350.0
+  y: 6278200.0
+  radius: 40.0
+
+environment:
+  - urban
+
+difficulty: 2
+
+max_steps: 200
+
+prompt:
+  system: |
+    You are an autonomous drone navigation agent flying over aerial
+    imagery of the Isère department in France.  Your mission is to
+    locate a white truck on the ground.  At each step you receive a
+    nadir aerial image and your current state.  You must respond with
+    a JSON action: {"dx": <float>, "dy": <float>, "dz": <float>,
+    "action_type": "move|found|stop", "reasoning": "<brief explanation>"}.
+    When you believe you are directly above the target, use "found".
+  user_template: |
+    Position: ({x}, {y}, {z}).  Step {step}/{max_steps}.
+    Distance traveled: {distance}m.  Find the white truck.
