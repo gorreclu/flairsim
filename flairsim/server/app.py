@@ -196,6 +196,59 @@ class ScenariosListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# COSIA land-cover colour palette (19 classes, 0-indexed).
+# Source: official FLAIR-HUB nomenclature (https://github.com/IGNF/FLAIR-HUB).
+_COSIA_PALETTE: np.ndarray = np.array(
+    [
+        [219, 14, 154],  #  0 – building           #db0e9a
+        [153, 153, 255],  #  1 – greenhouse          #9999ff
+        [61, 230, 235],  #  2 – swimming_pool        #3de6eb
+        [248, 12, 0],  #  3 – impervious surface    #f80c00
+        [147, 142, 123],  #  4 – pervious surface     #938e7b
+        [169, 113, 1],  #  5 – bare soil             #a97101
+        [21, 83, 174],  #  6 – water                 #1553ae
+        [255, 255, 255],  #  7 – snow                 #ffffff
+        [85, 255, 0],  #  8 – herbaceous vegetation  #55ff00
+        [255, 243, 13],  #  9 – agricultural land     #fff30d
+        [228, 223, 124],  # 10 – plowed land           #e4df7c
+        [102, 0, 130],  # 11 – vineyard              #660082
+        [70, 228, 131],  # 12 – deciduous             #46e483
+        [25, 74, 38],  # 13 – coniferous             #194a26
+        [243, 166, 13],  # 14 – brushwood             #f3a60d
+        [138, 179, 160],  # 15 – clear cut             #8ab3a0
+        [197, 220, 66],  # 16 – ligneous              #c5dc42
+        [107, 113, 79],  # 17 – mixed                 #6b714f
+        [0, 0, 0],  # 18 – undefined                 #000000
+    ],
+    dtype=np.uint8,
+)
+
+
+def _encode_label_cosia_png(image: np.ndarray) -> str:
+    """Encode a single-band COSIA label map as a coloured base64 PNG.
+
+    Maps each label value (0–18) to a distinct RGB colour using the
+    official COSIA palette.  Values outside [0, 18] are clamped to 0.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Array of shape ``(1, H, W)`` or ``(H, W)`` with uint8 label values.
+    """
+    if image.ndim == 3:
+        labels = image[0]  # (H, W)
+    else:
+        labels = image
+
+    labels = labels.astype(np.int32)
+    labels = np.clip(labels, 0, len(_COSIA_PALETTE) - 1)
+    rgb = _COSIA_PALETTE[labels]  # (H, W, 3)
+    pil_img = Image.fromarray(rgb)
+    buffer = io.BytesIO()
+    pil_img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 def _encode_image_png(image: np.ndarray) -> str:
     """Encode a (bands, H, W) array as base64 PNG.
 
@@ -328,9 +381,11 @@ def _obs_to_response(obs, grid: Optional[GridOverlay] = None) -> ObservationResp
     images_b64: Dict[str, str] = {}
     if obs.images:
         for mod_name, mod_image in obs.images.items():
-            images_b64[mod_name] = _encode_image_png(
-                _apply_grid_overlay(mod_image, grid)
-            )
+            gridded = _apply_grid_overlay(mod_image, grid)
+            if mod_name == "LABEL_COSIA":
+                images_b64[mod_name] = _encode_label_cosia_png(gridded)
+            else:
+                images_b64[mod_name] = _encode_image_png(gridded)
 
     return ObservationResponse(
         step=obs.step,
