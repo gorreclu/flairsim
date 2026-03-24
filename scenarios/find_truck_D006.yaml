@@ -15,6 +15,7 @@ dataset:
   roi: UU-S2-1
   modalities:
     - AERIAL_RGBI
+    - AERIAL_LABEL-COSIA
   source: local
 
 start:
