@@ -24,8 +24,8 @@ start:
   z: 150.0
 
 target:
-  x: 1018350.0
-  y: 6278200.0
+  x: 1018250.0
+  y: 6279454.0
   radius: 40.0
 
 environment:
