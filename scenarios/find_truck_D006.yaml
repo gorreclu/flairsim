@@ -19,8 +19,8 @@ dataset:
   source: local
 
 start:
-  x: 1018100.0
-  y: 6278500.0
+  x: 1018617.0
+  y: 6279328.0
   z: 150.0
 
 target:
