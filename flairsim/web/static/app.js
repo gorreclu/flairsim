@@ -212,31 +212,29 @@ function renderScenarioCard(s) {
         starsHtml += '</span>';
     }
 
-    // Specs table
-    const specsRows = [
-        { label: 'Domain', value: domain },
-        { label: 'ROI', value: roi },
-        { label: 'Environment', value: environment.join(', ') },
-        { label: 'Modalities', value: modalities.join(', ') },
-        { label: 'Max steps', value: String(maxSteps) },
-    ].filter(r => r.value);
-
-    let specsHtml = '<table class="scenario-specs">';
-    specsRows.forEach(r => {
-        specsHtml += '<tr><td class="spec-label">' + escapeHtml(r.label) + '</td><td class="spec-value">' + escapeHtml(r.value) + '</td></tr>';
+    // Specs as rounded badges
+    let tagsHtml = '<div class="scenario-tags">';
+    if (domain) tagsHtml += '<span class="tag tag-domain">' + escapeHtml(domain) + '</span>';
+    if (roi) tagsHtml += '<span class="tag">' + escapeHtml(roi) + '</span>';
+    environment.forEach(e => {
+        tagsHtml += '<span class="tag tag-env">' + escapeHtml(e) + '</span>';
     });
-    specsHtml += '</table>';
+    modalities.forEach(m => {
+        tagsHtml += '<span class="tag tag-mod">' + escapeHtml(m) + '</span>';
+    });
+    tagsHtml += '<span class="tag tag-steps">' + escapeHtml(String(maxSteps)) + ' steps</span>';
+    tagsHtml += '</div>';
 
-    const overviewUrl = API_BASE + '/scenarios/' + encodeURIComponent(id) + '/overview';
+    const thumbnailUrl = API_BASE + '/scenarios/' + encodeURIComponent(id) + '/thumbnail?size=400';
 
     return `
         <div class="scenario-card">
             <h3>${escapeHtml(name)} ${starsHtml}</h3>
-            <div class="scenario-overview">
-                <img src="${overviewUrl}" alt="${escapeAttr(name)}" loading="lazy" onerror="this.parentElement.style.display='none'">
+            <div class="scenario-thumbnail">
+                <img src="${thumbnailUrl}" alt="${escapeAttr(name)}" loading="lazy" onerror="this.parentElement.classList.add('thumb-error')">
             </div>
             <p class="scenario-desc">${escapeHtml(desc)}</p>
-            ${specsHtml}
+            ${tagsHtml}
             <div class="mini-leaderboard" id="mini-lb-${escapeAttr(id)}">
                 <h4>Top Runs</h4>
                 <div class="mini-leaderboard-empty">Loading...</div>
@@ -536,39 +534,72 @@ function switchLbTab(tab) {
     }
 }
 
+let _lbGlobalMode = 'ai'; // default AI for global ranking
+
+function switchGlobalLbMode(mode) {
+    _lbGlobalMode = mode;
+    document.getElementById('lb-global-mode-ai').classList.toggle('active', mode === 'ai');
+    document.getElementById('lb-global-mode-human').classList.toggle('active', mode === 'human');
+    loadGlobalLeaderboard();
+}
+
 async function loadGlobalLeaderboard() {
     const container = document.getElementById('lb-global-container');
     container.innerHTML = '<div class="loading-msg">Loading...</div>';
     try {
-        const data = await apiFetch('/leaderboard/global?limit=100');
+        const mode = _lbGlobalMode;
+        const data = await apiFetch('/leaderboard/global?limit=100&mode=' + encodeURIComponent(mode));
         const entries = data.leaderboard || [];
+        const scenarioIds = data.scenario_ids || [];
+
+        // Load scenario names for column headers.
+        if (scenarios.length === 0) {
+            try { scenarios = await fetchScenarios(); } catch (_) {}
+        }
+        const scenarioNames = {};
+        scenarios.forEach(s => {
+            const sid = s.scenario_id || s.id;
+            scenarioNames[sid] = s.name || sid;
+        });
+
         if (entries.length === 0) {
             container.innerHTML = '<div class="empty-msg">No runs yet.</div>';
             return;
         }
-        let html = `
-            <table class="leaderboard-table">
-                <thead><tr>
-                    <th>#</th>
-                    <th>Agent</th>
-                    <th>Score</th>
-                    <th>Scenarios</th>
-                </tr></thead>
-                <tbody>
-        `;
+
+        // Build header with per-scenario columns.
+        let html = '<table class="leaderboard-table"><thead><tr>';
+        html += '<th>#</th><th>Agent</th><th>Total Score</th>';
+        scenarioIds.forEach(sid => {
+            const shortName = scenarioNames[sid] || sid;
+            html += '<th title="' + escapeAttr(sid) + '">' + escapeHtml(shortName) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
         entries.forEach((e, i) => {
             const score = e.total_score != null ? e.total_score.toFixed(1) : '-';
             const agentName = e.agent_name || '-';
             const agentLink = agentName !== '-'
                 ? '<a href="#agent/' + encodeURIComponent(agentName) + '" class="agent-link" onclick="event.stopPropagation()">' + escapeHtml(agentName) + '</a>'
                 : escapeHtml(agentName);
-            html += `<tr>
-                <td>${rankBadge(i)}</td>
-                <td>${agentLink}</td>
-                <td>${escapeHtml(score)}</td>
-                <td>${e.scenarios_attempted || 0}</td>
-            </tr>`;
+            const scenarioScores = e.scenario_scores || {};
+
+            html += '<tr>';
+            html += '<td>' + rankBadge(i) + '</td>';
+            html += '<td>' + agentLink + '</td>';
+            html += '<td><strong>' + escapeHtml(score) + '</strong></td>';
+            scenarioIds.forEach(sid => {
+                const ss = scenarioScores[sid];
+                if (ss != null) {
+                    const cls = ss >= 0 ? 'result-success' : 'result-fail';
+                    html += '<td><span class="' + cls + '">' + ss.toFixed(1) + '</span></td>';
+                } else {
+                    html += '<td style="color:var(--text-muted)">-</td>';
+                }
+            });
+            html += '</tr>';
         });
+
         html += '</tbody></table>';
         container.innerHTML = html;
     } catch (err) {
@@ -1944,30 +1975,110 @@ async function loadAboutPage() {
     }
 
     let html = '';
-    html += '<h2>About FlairSim</h2>';
-    html += '<p class="about-intro">FlairSim is a drone navigation benchmark built on top of <a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB</a> aerial imagery. ';
-    html += 'Agents (human or AI) navigate a simulated drone to locate targets in real French aerial photographs.</p>';
 
-    html += '<h3>How It Works</h3>';
+    // --- Hero ---
+    html += '<h2>FlairSim Benchmark</h2>';
+    html += '<p class="about-intro">';
+    html += 'FlairSim is an open benchmark for evaluating autonomous AI agents on visual drone navigation tasks. ';
+    html += 'Agents are dropped at a random starting position over real French aerial imagery from the ';
+    html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB</a> ';
+    html += 'dataset and must locate a specified target using only egocentric visual observations.';
+    html += '</p>';
+
+    // --- What is FlairSim ---
+    html += '<h3>What is FlairSim?</h3>';
+    html += '<p class="about-intro">';
+    html += 'FlairSim provides a standardised environment for benchmarking vision-language models (VLMs) and ';
+    html += 'autonomous agents on spatial reasoning, visual search, and navigation. Each scenario defines a ';
+    html += 'target object (e.g. "find the red car"), a region of interest (ROI) from real aerial imagery, ';
+    html += 'and constraints like maximum steps and available sensor modalities (RGB, infrared, elevation).';
+    html += '</p>';
+    html += '<p class="about-intro">';
+    html += 'The benchmark supports both <strong>AI agents</strong> (connecting via the REST API) and ';
+    html += '<strong>human players</strong> (using the web interface). All runs are scored with the same ';
+    html += 'methodology and ranked on a shared leaderboard, enabling direct comparison between AI and human performance.';
+    html += '</p>';
+
+    // --- How to use (for agents) ---
+    html += '<h3>Using FlairSim for AI Agents</h3>';
     html += '<ol class="about-list">';
-    html += '<li>Choose a scenario from the landing page</li>';
-    html += '<li>Navigate the drone using keyboard controls or click-to-move</li>';
-    html += '<li>Find the target and press <kbd>Space</kbd> to declare FOUND, or <kbd>Esc</kbd> to stop</li>';
-    html += '<li>Your run is scored and ranked on the leaderboard</li>';
+    html += '<li><strong>Create a session</strong> via <code>POST /api/sessions</code> with your scenario ID, mode <code>"ai"</code>, and model info.</li>';
+    html += '<li><strong>Observe</strong> the environment via <code>GET /api/sessions/{id}/observe</code> to receive the drone\'s current visual observation (base64 image).</li>';
+    html += '<li><strong>Act</strong> by sending movement commands via <code>POST /api/sessions/{id}/step</code> with <code>dx</code>, <code>dy</code>, <code>dz</code> displacements.</li>';
+    html += '<li><strong>Repeat</strong> the observe/act loop until the agent declares the target found (<code>action_type: "found"</code>) or reaches the step limit.</li>';
+    html += '<li>The run is automatically scored and submitted to the leaderboard.</li>';
     html += '</ol>';
-
-    html += '<h3>Scoring Methodology</h3>';
-    html += '<div class="about-scoring">';
-    html += '<h4>Successful Runs (S &isin; [0, 100])</h4>';
-    html += '<pre class="formula">S = [0.3&middot;(D_min/D_agent) + 0.3&middot;(Step_min/Step_agent) + 0.3&middot;(t_min/t_agent) + 0.1&middot;c] &times; 100</pre>';
-    html += '<p>Where D_min, Step_min, t_min are the per-scenario best values across all successful runs, and c is the agent\'s confidence (0-1).</p>';
-
-    html += '<h4>Failed Runs (F &isin; [-100, 0])</h4>';
-    html += '<pre class="formula">F = -100 &times; [0.5&middot;(1 - E) + 0.5&middot;c]</pre>';
-    html += '<p>Where E = FOV coverage (exploration ratio) and c = confidence. If the target was seen during the run, the penalty is multiplied by 1.5 (clamped to -100).</p>';
+    html += '<div class="about-note">';
+    html += '<strong>Tip:</strong> Each observation includes metadata about position, altitude, available modalities, and remaining steps. ';
+    html += 'Agents can switch between sensor modalities (RGB, near-infrared, elevation) to gather complementary information.';
     html += '</div>';
 
-    // Scenarios table
+    // --- Scoring ---
+    html += '<h3>Scoring Methodology</h3>';
+    html += '<p class="about-intro">';
+    html += 'Every completed run receives a score reflecting how efficiently the agent navigated to the target. ';
+    html += 'Scores range from <span class="range-badge range-fail">-100</span> (worst failure) to ';
+    html += '<span class="range-badge range-success">+100</span> (optimal success). ';
+    html += 'A score of 0 represents the boundary between success and failure.';
+    html += '</p>';
+
+    // Successful runs
+    html += '<div class="about-scoring">';
+    html += '<h4>Successful Runs &mdash; S &isin; [0, 100]</h4>';
+    html += '<p>When the agent correctly locates and declares the target found, the score rewards efficiency across three dimensions (distance, steps, time) plus a confidence bonus:</p>';
+    html += '<pre class="formula">';
+    html += '<span class="var">S</span> = [ <span class="num">0.3</span> &middot; (<span class="var">D<sub>min</sub></span> / <span class="var">D<sub>agent</sub></span>)';
+    html += ' + <span class="num">0.3</span> &middot; (<span class="var">Step<sub>min</sub></span> / <span class="var">Step<sub>agent</sub></span>)';
+    html += ' + <span class="num">0.3</span> &middot; (<span class="var">t<sub>min</sub></span> / <span class="var">t<sub>agent</sub></span>)';
+    html += ' + <span class="num">0.1</span> &middot; <span class="var">c</span> ] &times; 100';
+    html += '</pre>';
+
+    html += '<ul class="formula-defs">';
+    html += '<li><code>D<sub>min</sub></code> &mdash; Minimum distance travelled across all successful runs for this scenario (benchmark reference)</li>';
+    html += '<li><code>D<sub>agent</sub></code> &mdash; Total distance travelled by the current agent\'s run</li>';
+    html += '<li><code>Step<sub>min</sub></code> &mdash; Minimum steps taken across all successful runs for this scenario</li>';
+    html += '<li><code>Step<sub>agent</sub></code> &mdash; Steps taken by the current agent</li>';
+    html += '<li><code>t<sub>min</sub></code> &mdash; Minimum duration (seconds) across all successful runs for this scenario</li>';
+    html += '<li><code>t<sub>agent</sub></code> &mdash; Duration of the current agent\'s run</li>';
+    html += '<li><code>c</code> &mdash; Confidence score (0&ndash;1) optionally declared by the agent when finding the target. Represents the agent\'s certainty that the target is within its field of view. Defaults to 0 if not provided.</li>';
+    html += '</ul>';
+
+    html += '<div class="about-note">';
+    html += '<strong>Reference minimums</strong> (D<sub>min</sub>, Step<sub>min</sub>, t<sub>min</sub>) are dynamically computed as the best values across <em>all</em> successful runs recorded for each scenario. ';
+    html += 'As more agents complete runs, these references may improve, recalibrating scores for future runs. ';
+    html += 'Each ratio is capped at 1.0, so an agent can never exceed the "perfect" baseline on any single dimension.';
+    html += '</div>';
+    html += '</div>'; // close about-scoring
+
+    // Failed runs
+    html += '<div class="about-scoring">';
+    html += '<h4>Failed Runs &mdash; F &isin; [-100, 0]</h4>';
+    html += '<p>When the agent fails to locate the target (step limit reached, or manual stop), the score penalises lack of exploration and overconfidence:</p>';
+    html += '<pre class="formula">';
+    html += '<span class="var">F</span> = -100 &times; [ <span class="num">0.5</span> &middot; (1 - <span class="var">E</span>)';
+    html += ' + <span class="num">0.5</span> &middot; <span class="var">c</span> ]';
+    html += '</pre>';
+
+    html += '<ul class="formula-defs">';
+    html += '<li><code>E</code> &mdash; FOV coverage (exploration ratio, 0&ndash;1): fraction of the region of interest that fell within the agent\'s field of view during the run. Higher exploration mitigates the penalty.</li>';
+    html += '<li><code>c</code> &mdash; Confidence (0&ndash;1): a high confidence on a failed run is penalised, since the agent was wrong.</li>';
+    html += '</ul>';
+
+    html += '<p>If the target was visible at any point during the run (<code>target_seen = true</code>), ';
+    html += 'the penalty is multiplied by <strong>1.5&times;</strong> before clamping to -100. ';
+    html += 'This penalises agents that saw the target but failed to declare it found.</p>';
+    html += '</div>'; // close about-scoring
+
+    // Global ranking
+    html += '<div class="about-scoring">';
+    html += '<h4>Global Ranking</h4>';
+    html += '<p>The global leaderboard ranks agents (not individual runs) by summing their best score per scenario. ';
+    html += 'For each agent, only the highest-scoring run on each scenario is kept. ';
+    html += 'The total score across all scenarios determines the agent\'s global rank.</p>';
+    html += '<p>AI and human agents are ranked in separate tabs to enable fair comparison within each category.</p>';
+    html += '</div>';
+
+    // --- Scenarios table ---
     if (scenarios.length > 0) {
         html += '<h3>Available Scenarios</h3>';
         html += '<div class="leaderboard-table-container"><table class="leaderboard-table"><thead><tr>';
@@ -1995,11 +2106,22 @@ async function loadAboutPage() {
         html += '</tbody></table></div>';
     }
 
-    html += '<h3>Links</h3>';
-    html += '<ul class="about-list">';
-    html += '<li><a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB Dataset</a></li>';
-    html += '<li><a href="https://github.com" target="_blank" style="color:var(--accent)">GitHub Repository</a></li>';
-    html += '</ul>';
+    // --- Links ---
+    html += '<h3>Links &amp; Resources</h3>';
+    html += '<div class="about-links">';
+    html += '<a href="https://github.com/gorreclu/flairsim" target="_blank" class="about-link-btn">';
+    html += '<svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
+    html += 'GitHub Repository';
+    html += '</a>';
+    html += '<a href="https://arxiv.org" target="_blank" class="about-link-btn">';
+    html += '<svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>';
+    html += 'arXiv Paper (coming soon)';
+    html += '</a>';
+    html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" class="about-link-btn">';
+    html += '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+    html += 'FLAIR-HUB Dataset';
+    html += '</a>';
+    html += '</div>';
 
     container.innerHTML = html;
 }

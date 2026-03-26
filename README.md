@@ -5,7 +5,7 @@
 **Drone simulator over FLAIR-HUB aerial imagery**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-554%20passed-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-608%20passed-brightgreen.svg)](#tests)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![uv](https://img.shields.io/badge/pkg-uv-blueviolet.svg)](https://docs.astral.sh/uv/)
@@ -134,12 +134,14 @@ flairsim/
 | `/api/scenarios` | GET | List scenarios with full details |
 | `/api/scenarios/{id}` | GET | Scenario detail + prompt templates |
 | `/api/scenarios/{id}/overview` | GET | Overview JPEG |
+| `/api/scenarios/{id}/thumbnail` | GET | Square start-view thumbnail |
 | `/api/sessions` | POST | Create session (spawns subprocess) |
 | `/api/sessions` | GET | List active sessions |
 | `/api/sessions/{id}` | GET | Session status |
 | `/api/sessions/{id}` | DELETE | Destroy session |
 | `/api/sessions/{id}/sim/{path}` | ANY | Proxy to simulator |
 | `/api/leaderboard` | GET | Rankings (`?scenario_id=...&mode=...&limit=50`) |
+| `/api/leaderboard/global` | GET | Global agent ranking (`?mode=ai&limit=100`) |
 | `/api/leaderboard` | POST | Submit run result |
 | `/api/leaderboard/submit` | POST | Alias (preferred for notebooks) |
 | `/api/leaderboard/{id}` | GET | Run detail |
@@ -209,6 +211,54 @@ prompt:
   system: "You are a drone navigation agent..."
   user_template: "Position: ({x}, {y}, {z}). Step {step}/{max_steps}."
 ```
+
+---
+
+## Scoring Methodology
+
+Every completed run (human or AI) receives a normalised score reflecting how efficiently the agent navigated to the target.
+
+### Successful Runs — S ∈ [0, 100]
+
+When the agent correctly locates the target and declares it found:
+
+```
+S = [ 0.3 · (D_min / D_agent)
+    + 0.3 · (Step_min / Step_agent)
+    + 0.3 · (t_min / t_agent)
+    + 0.1 · c ] × 100
+```
+
+| Variable | Description |
+|----------|-------------|
+| `D_min` | Minimum distance travelled across all successful runs for this scenario |
+| `D_agent` | Distance travelled by the current agent |
+| `Step_min` | Minimum steps taken across all successful runs for this scenario |
+| `Step_agent` | Steps taken by the current agent |
+| `t_min` | Minimum duration (seconds) across all successful runs for this scenario |
+| `t_agent` | Duration of the current agent's run |
+| `c` | Confidence (0–1) optionally declared by the agent; defaults to 0 |
+
+Reference minimums are dynamically recomputed as new successful runs are recorded. Each efficiency ratio is capped at 1.0.
+
+### Failed Runs — F ∈ [-100, 0]
+
+When the agent fails (step limit reached or manual stop):
+
+```
+F = -100 × [ 0.5 · (1 - E) + 0.5 · c ]
+```
+
+| Variable | Description |
+|----------|-------------|
+| `E` | FOV coverage (exploration ratio, 0–1): fraction of the ROI explored |
+| `c` | Confidence (0–1): high confidence on failure is penalised |
+
+If the target was visible at any point during the run (`target_seen = true`), the penalty is multiplied by **1.5×** before clamping to −100.
+
+### Global Ranking
+
+The global leaderboard ranks agents (not individual runs). For each agent, only the best score per scenario is kept. Total scores are summed across all scenarios. AI and human agents are ranked separately.
 
 ---
 

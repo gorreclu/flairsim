@@ -124,6 +124,7 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
@@ -161,6 +162,12 @@
 
             <!-- Global ranking panel -->
             <div id="lb-panel-global" class="lb-panel">
+                <div class="leaderboard-filters">
+                    <div class="lb-sub-tabs">
+                        <button class="lb-sub-tab active" id="lb-global-mode-ai" onclick="switchGlobalLbMode('ai')">AI Agents</button>
+                        <button class="lb-sub-tab" id="lb-global-mode-human" onclick="switchGlobalLbMode('human')">Human</button>
+                    </div>
+                </div>
                 <div id="lb-global-container" class="leaderboard-table-container">
                     <div class="loading-msg">Loading...</div>
                 </div>
@@ -193,7 +200,8 @@
         <header class="top-bar">
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Back to Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
@@ -233,6 +241,7 @@
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
                 <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>

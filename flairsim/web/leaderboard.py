@@ -662,7 +662,10 @@ class Leaderboard:
         return result
 
     def get_global_leaderboard(
-        self, scenario_ids: List[str], limit: int = 50
+        self,
+        scenario_ids: List[str],
+        limit: int = 50,
+        mode: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Aggregate per-scenario scores into a global agent ranking.
 
@@ -677,26 +680,36 @@ class Leaderboard:
             Only runs belonging to these scenarios are considered.
         limit : int
             Maximum number of agents to return (default 50).
+        mode : str or None
+            Optional filter (``"ai"`` or ``"human"``).
 
         Returns
         -------
         list of dict
             Each entry contains:
             ``agent_name``, ``total_score``, ``scenarios_attempted``,
-            ``runs`` (list of best-run dicts per scenario).
+            ``runs`` (list of best-run dicts per scenario with a ``score``
+            field added to each).
             Sorted by ``total_score`` descending.
         """
         if not scenario_ids:
             return []
 
         placeholders = ",".join("?" * len(scenario_ids))
+        params: list[Any] = list(scenario_ids)
+
+        mode_clause = ""
+        if mode is not None:
+            mode_clause = " AND mode = ?"
+            params.append(mode)
+
         rows = self._conn.execute(
             f"""\
             SELECT * FROM runs
-            WHERE scenario_id IN ({placeholders})
+            WHERE scenario_id IN ({placeholders}){mode_clause}
             ORDER BY success DESC, steps_taken ASC, distance_travelled ASC
             """,
-            list(scenario_ids),
+            params,
         ).fetchall()
 
         if not rows:
@@ -730,16 +743,22 @@ class Leaderboard:
         for agent_name, scenario_runs in agent_scenario_best.items():
             total_score = 0.0
             best_runs: List[Dict[str, Any]] = []
+            scenario_scores: Dict[str, float] = {}
             for sid, run in scenario_runs.items():
-                total_score += self._compute_score_with_mins(
+                score = self._compute_score_with_mins(
                     run, ref_mins.get(sid, {"dist": None, "steps": None, "time": None})
                 )
-                best_runs.append(run)
+                total_score += score
+                run_copy = dict(run)
+                run_copy["score"] = score
+                best_runs.append(run_copy)
+                scenario_scores[sid] = round(score, 1)
             entries.append(
                 {
                     "agent_name": agent_name,
                     "total_score": total_score,
                     "scenarios_attempted": len(scenario_runs),
+                    "scenario_scores": scenario_scores,
                     "runs": best_runs,
                 }
             )
