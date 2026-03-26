@@ -348,14 +348,21 @@ class Leaderboard:
     def _fetch_reference_mins(self, scenario_id: str) -> Dict[str, Optional[float]]:
         """Query MIN aggregates for successful runs on a given scenario.
 
-        Returns a dict with keys ``dist``, ``steps``, ``time``, each
-        holding the minimum value across ALL successful runs (any mode),
-        or ``None`` if no eligible rows exist.
+        Returns a dict with keys ``steps`` and ``time``, each holding the
+        minimum value across ALL successful runs (any mode), or ``None``
+        if no eligible rows exist.
+
+        .. note::
+
+           The ``dist`` reference minimum (D_min) is **not** fetched from
+           the database.  It is the Cartesian (Euclidean) distance between
+           the scenario's start position and its target position and must
+           be supplied externally via the ``d_min`` parameter on the
+           scoring methods.
         """
         row = self._conn.execute(
             """\
             SELECT
-                MIN(distance_travelled),
                 MIN(steps_taken),
                 MIN(duration_s)
             FROM runs
@@ -364,9 +371,8 @@ class Leaderboard:
             (scenario_id,),
         ).fetchone()
         return {
-            "dist": row[0],
-            "steps": row[1],
-            "time": row[2],
+            "steps": row[0],
+            "time": row[1],
         }
 
     @staticmethod
@@ -379,7 +385,12 @@ class Leaderboard:
             return 1.0
         return numerator / denominator
 
-    def compute_score_for_run(self, run: Dict[str, Any], scenario_id: str) -> float:
+    def compute_score_for_run(
+        self,
+        run: Dict[str, Any],
+        scenario_id: str,
+        d_min: Optional[float] = None,
+    ) -> float:
         """Compute a normalised score for a single completed run.
 
         For a **successful** run the score S ∈ [0, 100] is:
@@ -389,8 +400,10 @@ class Leaderboard:
                + 0.3·(t_min/t_agent)
                + 0.1·c] × 100
 
-        where D_min, Step_min, t_min are the per-scenario minimums drawn
-        from the database and c is the run's confidence (0 if absent).
+        where D_min is the Cartesian (Euclidean) distance between the
+        scenario's start position and the target position, Step_min and
+        t_min are the per-scenario minimums drawn from the database, and
+        c is the run's confidence (0 if absent).
         Missing or zero agent values default the corresponding ratio to 1.0.
 
         For a **failed** run the score F ∈ [-100, 0] is:
@@ -406,6 +419,11 @@ class Leaderboard:
             A run dict as returned by :meth:`get_run` or :meth:`_row_to_dict`.
         scenario_id : str
             The scenario the run belongs to (used to query reference mins).
+        d_min : float or None
+            The Cartesian (Euclidean) distance between the scenario's
+            start position and the target position.  Used as D_min in
+            the success scoring formula.  When ``None`` the distance
+            ratio defaults to 1.0 (neutral).
 
         Returns
         -------
@@ -413,38 +431,77 @@ class Leaderboard:
             Score in [0, 100] for success, or [-100, 0] for failure.
         """
         if run.get("success"):
-            return self._score_success(run, scenario_id)
+            return self._score_success(run, scenario_id, d_min=d_min)
         return self._score_failure(run)
 
     def _compute_score_with_mins(
-        self, run: Dict[str, Any], mins: Dict[str, Any]
+        self,
+        run: Dict[str, Any],
+        mins: Dict[str, Any],
+        d_min: Optional[float] = None,
     ) -> float:
         """Like :meth:`compute_score_for_run` but uses pre-loaded reference mins.
 
         Avoids a DB round-trip per run when mins are already known.
+
+        Parameters
+        ----------
+        run : dict
+            A run dict.
+        mins : dict
+            Pre-loaded reference mins (keys ``steps``, ``time``).
+        d_min : float or None
+            The Cartesian (Euclidean) distance between the scenario's
+            start position and the target position (D_min).  When
+            ``None`` the distance ratio defaults to 1.0 (neutral).
         """
         if run.get("success"):
-            return self._score_success_with_mins(run, mins)
+            full_mins = dict(mins)
+            full_mins["dist"] = d_min
+            return self._score_success_with_mins(run, full_mins)
         return self._score_failure(run)
 
-    def _score_success(self, run: Dict[str, Any], scenario_id: str) -> float:
-        """Compute success score S ∈ [0, 100]."""
+    def _score_success(
+        self,
+        run: Dict[str, Any],
+        scenario_id: str,
+        d_min: Optional[float] = None,
+    ) -> float:
+        """Compute success score S ∈ [0, 100].
+
+        Parameters
+        ----------
+        run : dict
+            A successful run dict.
+        scenario_id : str
+            Used to fetch ``steps`` and ``time`` reference mins from DB.
+        d_min : float or None
+            Cartesian start-to-target distance for the scenario (D_min).
+        """
         mins = self._fetch_reference_mins(scenario_id)
+        mins["dist"] = d_min
         return self._score_success_with_mins(run, mins)
 
     def _score_success_with_mins(
         self, run: Dict[str, Any], mins: Dict[str, Any]
     ) -> float:
-        """Compute success score S ∈ [0, 100] given pre-loaded reference mins."""
+        """Compute success score S ∈ [0, 100] given pre-loaded reference mins.
+
+        ``mins`` must contain:
+        - ``dist``: D_min — Cartesian distance from start to target
+          (or ``None`` for neutral ratio).
+        - ``steps``: minimum steps from DB (or ``None``).
+        - ``time``: minimum duration from DB (or ``None``).
+        """
         # Weights: distance 30 %, steps 30 %, time 30 %, confidence 10 %
         WEIGHT_DIST = 0.3
         WEIGHT_STEPS = 0.3
         WEIGHT_TIME = 0.3
         WEIGHT_CONF = 0.1
 
-        ratio_dist = self._safe_ratio(mins["dist"], run.get("distance_travelled"))
-        ratio_steps = self._safe_ratio(mins["steps"], run.get("steps_taken"))
-        ratio_time = self._safe_ratio(mins["time"], run.get("duration_s"))
+        ratio_dist = self._safe_ratio(mins.get("dist"), run.get("distance_travelled"))
+        ratio_steps = self._safe_ratio(mins.get("steps"), run.get("steps_taken"))
+        ratio_time = self._safe_ratio(mins.get("time"), run.get("duration_s"))
         conf = run.get("confidence")
         confidence = conf if conf is not None else 0.0
 
@@ -477,7 +534,10 @@ class Leaderboard:
         return max(-100.0, min(0.0, raw))
 
     def compute_score_breakdown(
-        self, run: Dict[str, Any], scenario_id: str
+        self,
+        run: Dict[str, Any],
+        scenario_id: str,
+        d_min: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Compute a detailed score breakdown for a single run.
 
@@ -495,6 +555,10 @@ class Leaderboard:
             A run dict as returned by :meth:`get_run`.
         scenario_id : str
             The scenario the run belongs to.
+        d_min : float or None
+            The Cartesian (Euclidean) distance between the scenario's
+            start position and the target position (D_min).  When
+            ``None`` the distance ratio defaults to 1.0 (neutral).
 
         Returns
         -------
@@ -503,23 +567,37 @@ class Leaderboard:
         is_success = bool(run.get("success"))
 
         if is_success:
-            return self._breakdown_success(run, scenario_id)
+            return self._breakdown_success(run, scenario_id, d_min=d_min)
         return self._breakdown_failure(run)
 
     def _breakdown_success(
-        self, run: Dict[str, Any], scenario_id: str
+        self,
+        run: Dict[str, Any],
+        scenario_id: str,
+        d_min: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Build detailed breakdown for a successful run."""
+        """Build detailed breakdown for a successful run.
+
+        Parameters
+        ----------
+        run : dict
+            A successful run dict.
+        scenario_id : str
+            Used to fetch ``steps`` and ``time`` reference mins from DB.
+        d_min : float or None
+            Cartesian start-to-target distance for the scenario (D_min).
+        """
         mins = self._fetch_reference_mins(scenario_id)
+        mins["dist"] = d_min
 
         WEIGHT_DIST = 0.3
         WEIGHT_STEPS = 0.3
         WEIGHT_TIME = 0.3
         WEIGHT_CONF = 0.1
 
-        ratio_dist = self._safe_ratio(mins["dist"], run.get("distance_travelled"))
-        ratio_steps = self._safe_ratio(mins["steps"], run.get("steps_taken"))
-        ratio_time = self._safe_ratio(mins["time"], run.get("duration_s"))
+        ratio_dist = self._safe_ratio(mins.get("dist"), run.get("distance_travelled"))
+        ratio_steps = self._safe_ratio(mins.get("steps"), run.get("steps_taken"))
+        ratio_time = self._safe_ratio(mins.get("time"), run.get("duration_s"))
         conf = run.get("confidence")
         confidence = conf if conf is not None else 0.0
 
@@ -557,9 +635,9 @@ class Leaderboard:
             "success": True,
             "components": components,
             "reference_mins": {
-                "distance": mins["dist"],
-                "steps": mins["steps"],
-                "time": mins["time"],
+                "distance": mins.get("dist"),
+                "steps": mins.get("steps"),
+                "time": mins.get("time"),
             },
         }
 
@@ -666,6 +744,7 @@ class Leaderboard:
         scenario_ids: List[str],
         limit: int = 50,
         mode: Optional[str] = None,
+        d_min_by_scenario: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """Aggregate per-scenario scores into a global agent ranking.
 
@@ -682,6 +761,13 @@ class Leaderboard:
             Maximum number of agents to return (default 50).
         mode : str or None
             Optional filter (``"ai"`` or ``"human"``).
+        d_min_by_scenario : dict or None
+            Mapping of ``{scenario_id: d_min}`` where *d_min* is the
+            Cartesian (Euclidean) distance between the scenario's start
+            position and its target position.  Used as D_min in the
+            success scoring formula.  Scenarios missing from the dict
+            (or when ``None`` is passed) default to a neutral distance
+            ratio of 1.0.
 
         Returns
         -------
@@ -739,6 +825,7 @@ class Leaderboard:
         }
 
         # Build leaderboard entries.
+        d_mins = d_min_by_scenario or {}
         entries: List[Dict[str, Any]] = []
         for agent_name, scenario_runs in agent_scenario_best.items():
             total_score = 0.0
@@ -746,7 +833,9 @@ class Leaderboard:
             scenario_scores: Dict[str, float] = {}
             for sid, run in scenario_runs.items():
                 score = self._compute_score_with_mins(
-                    run, ref_mins.get(sid, {"dist": None, "steps": None, "time": None})
+                    run,
+                    ref_mins.get(sid, {"steps": None, "time": None}),
+                    d_min=d_mins.get(sid),
                 )
                 total_score += score
                 run_copy = dict(run)

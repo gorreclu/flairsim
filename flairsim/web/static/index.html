@@ -206,12 +206,13 @@
             </nav>
         </header>
 
+        <div class="detail-header">
+            <h2 id="detail-title">Run Detail</h2>
+            <div class="detail-meta" id="detail-meta"></div>
+        </div>
+
         <div class="detail-layout">
             <div class="detail-left">
-                <h2 id="detail-title">Run Detail</h2>
-                <div class="detail-meta" id="detail-meta"></div>
-                <div id="detail-score-breakdown"></div>
-
                 <div class="overview-container" id="overview-container">
                     <!-- Overview image + SVG overlay inserted by JS -->
                     <div class="loading-msg">Loading overview...</div>
@@ -219,9 +220,13 @@
             </div>
 
             <div class="detail-right">
-                <h3>Steps</h3>
-                <div class="steps-list" id="detail-steps-list">
-                    <!-- Filled by JS -->
+                <div id="detail-score-breakdown"></div>
+
+                <div class="detail-section">
+                    <h3>Steps</h3>
+                    <div class="steps-list" id="detail-steps-list">
+                        <!-- Filled by JS -->
+                    </div>
                 </div>
 
                 <div class="model-info-card" id="detail-model-info" hidden>

@@ -15,7 +15,7 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -126,10 +126,13 @@ def create_web_app(
 
         jpeg_path = overview_dir / f"{scenario_id}.jpg"
         bounds_path = overview_dir / f"{scenario_id}.json"
+        thumb_path = overview_dir / f"{scenario_id}_thumb.jpg"
 
-        # Skip if already generated.
-        if jpeg_path.exists() and bounds_path.exists():
-            logger.info("Overview already exists for %s, skipping.", scenario_id)
+        # Skip if all files already generated (overview + thumbnail).
+        if jpeg_path.exists() and bounds_path.exists() and thumb_path.exists():
+            logger.info(
+                "Overview and thumbnail already exist for %s, skipping.", scenario_id
+            )
             return
 
         # Build command for a temporary subprocess.
@@ -211,33 +214,84 @@ def create_web_app(
                 )
                 return
 
-            # Fetch overview image.
-            resp = httpx.get(f"{base_url}/overview?size=1024", timeout=30.0)
-            if resp.status_code != 200:
-                logger.error(
-                    "Failed to fetch overview for %s: HTTP %d",
+            # Fetch overview image (skip if already exists).
+            if not jpeg_path.exists() or not bounds_path.exists():
+                resp = httpx.get(f"{base_url}/overview?size=1024", timeout=30.0)
+                if resp.status_code != 200:
+                    logger.error(
+                        "Failed to fetch overview for %s: HTTP %d",
+                        scenario_id,
+                        resp.status_code,
+                    )
+                    return
+
+                # Save JPEG.
+                jpeg_path.write_bytes(resp.content)
+
+                # Save bounds from response headers.
+                bounds_data = {
+                    "x_min": float(resp.headers.get("X-Bounds-Xmin", 0)),
+                    "y_min": float(resp.headers.get("X-Bounds-Ymin", 0)),
+                    "x_max": float(resp.headers.get("X-Bounds-Xmax", 0)),
+                    "y_max": float(resp.headers.get("X-Bounds-Ymax", 0)),
+                }
+                bounds_path.write_text(json.dumps(bounds_data, indent=2))
+                logger.info(
+                    "Generated overview for %s: %s (%d bytes)",
                     scenario_id,
-                    resp.status_code,
+                    jpeg_path,
+                    len(resp.content),
                 )
-                return
+            else:
+                logger.info(
+                    "Overview already exists for %s, skipping overview fetch.",
+                    scenario_id,
+                )
 
-            # Save JPEG.
-            jpeg_path.write_bytes(resp.content)
+            # Also generate start-view thumbnail by resetting the scenario.
+            if not thumb_path.exists():
+                try:
+                    reset_resp = httpx.post(
+                        f"{base_url}/reset",
+                        json={"scenario_id": scenario_id},
+                        timeout=30.0,
+                    )
+                    if reset_resp.status_code == 200:
+                        reset_data = reset_resp.json()
+                        img_b64 = reset_data.get("image", "")
+                        if img_b64:
+                            import base64
+                            from PIL import Image as PILImage
+                            import io
 
-            # Save bounds from response headers.
-            bounds_data = {
-                "x_min": float(resp.headers.get("X-Bounds-Xmin", 0)),
-                "y_min": float(resp.headers.get("X-Bounds-Ymin", 0)),
-                "x_max": float(resp.headers.get("X-Bounds-Xmax", 0)),
-                "y_max": float(resp.headers.get("X-Bounds-Ymax", 0)),
-            }
-            bounds_path.write_text(json.dumps(bounds_data, indent=2))
-            logger.info(
-                "Generated overview for %s: %s (%d bytes)",
-                scenario_id,
-                jpeg_path,
-                len(resp.content),
-            )
+                            img_bytes = base64.b64decode(img_b64)
+                            img = PILImage.open(io.BytesIO(img_bytes))
+                            # Resize to thumbnail size (300x300).
+                            img = img.resize((300, 300), PILImage.LANCZOS)
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=85)
+                            thumb_path.write_bytes(buf.getvalue())
+                            logger.info(
+                                "Generated start-view thumbnail for %s (%d bytes)",
+                                scenario_id,
+                                len(buf.getvalue()),
+                            )
+                        else:
+                            logger.warning(
+                                "No image in reset response for %s", scenario_id
+                            )
+                    else:
+                        logger.warning(
+                            "Failed to reset for thumbnail of %s: HTTP %d",
+                            scenario_id,
+                            reset_resp.status_code,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not generate thumbnail for %s",
+                        scenario_id,
+                        exc_info=True,
+                    )
 
         except Exception:
             logger.exception("Error generating overview for %s", scenario_id)
@@ -554,6 +608,33 @@ def create_web_app(
         return agent
 
     # ---------------------------------------------------------------
+    # D_min helpers — Euclidean start-to-target distance
+    # ---------------------------------------------------------------
+
+    def _compute_d_min(scenario_id: str) -> Optional[float]:
+        """Compute Euclidean distance between scenario start and target.
+
+        Returns ``None`` if the scenario cannot be loaded or the start
+        coordinates are not defined.
+        """
+        try:
+            scenario = session_mgr.scenario_loader.get(scenario_id)
+        except (FileNotFoundError, ValueError):
+            return None
+        if scenario.start.x is None or scenario.start.y is None:
+            return None
+        return scenario.target.distance_to(scenario.start.x, scenario.start.y)
+
+    def _build_d_min_map(scenario_ids: List[str]) -> Dict[str, float]:
+        """Build ``{scenario_id: d_min}`` for all given scenarios."""
+        d_mins: Dict[str, float] = {}
+        for sid in scenario_ids:
+            d = _compute_d_min(sid)
+            if d is not None:
+                d_mins[sid] = d
+        return d_mins
+
+    # ---------------------------------------------------------------
     # Global and per-scenario leaderboards (must be BEFORE /{run_id})
     # ---------------------------------------------------------------
 
@@ -567,8 +648,12 @@ def create_web_app(
         runs before aggregation.
         """
         scenario_ids = session_mgr.scenario_loader.list_ids()
+        d_min_map = _build_d_min_map(scenario_ids)
         entries = leaderboard.get_global_leaderboard(
-            scenario_ids, limit=limit, mode=mode
+            scenario_ids,
+            limit=limit,
+            mode=mode,
+            d_min_by_scenario=d_min_map,
         )
         # Return scenario IDs so frontend can build per-scenario columns.
         return {"leaderboard": entries, "scenario_ids": scenario_ids}
@@ -582,12 +667,18 @@ def create_web_app(
         Optional ``mode`` query parameter (``ai`` or ``human``) filters
         runs before scoring so only the requested category is ranked.
         """
+        d_min = _compute_d_min(scenario_id)
+
         # Fetch all runs first; apply limit after scoring so we rank correctly.
         all_runs = leaderboard.get_runs(scenario_id=scenario_id, mode=mode, limit=1000)
         scored_runs = []
         for run in all_runs:
             run_copy = dict(run)
-            run_copy["score"] = leaderboard.compute_score_for_run(run_copy, scenario_id)
+            run_copy["score"] = leaderboard.compute_score_for_run(
+                run_copy,
+                scenario_id,
+                d_min=d_min,
+            )
             scored_runs.append(run_copy)
         scored_runs.sort(key=lambda r: r["score"], reverse=True)
         return {"scenario_id": scenario_id, "runs": scored_runs[:limit]}
@@ -599,7 +690,12 @@ def create_web_app(
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         scenario_id = run["scenario_id"]
-        breakdown = leaderboard.compute_score_breakdown(run, scenario_id)
+        d_min = _compute_d_min(scenario_id)
+        breakdown = leaderboard.compute_score_breakdown(
+            run,
+            scenario_id,
+            d_min=d_min,
+        )
         return breakdown
 
     @app.get("/api/leaderboard/{run_id}")
@@ -676,15 +772,31 @@ def create_web_app(
         )
 
     @app.get("/api/scenarios/{scenario_id}/thumbnail")
-    async def get_scenario_thumbnail(scenario_id: str, size: int = 400):
-        """Return a square thumbnail centered on the scenario start position.
+    async def get_scenario_thumbnail(scenario_id: str, size: int = 300):
+        """Return a thumbnail for the scenario.
 
-        Crops the overview image around the start coordinates so the card
-        preview shows the actual starting view rather than the full ROI.
+        Prefers the pre-generated start-view image (captured via POST /reset
+        during startup).  Falls back to cropping the overview around the
+        start position if the start-view file is not available.
         """
         from PIL import Image as PILImage
         import io
 
+        # Check for pre-generated start-view thumbnail first.
+        thumb_path = overview_dir / f"{scenario_id}_thumb.jpg"
+        if thumb_path.exists():
+            thumb_bytes = thumb_path.read_bytes()
+            # Optionally resize if caller wants a different size.
+            size = min(size, 800)
+            img = PILImage.open(io.BytesIO(thumb_bytes))
+            if img.size != (size, size):
+                img = img.resize((size, size), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                thumb_bytes = buf.getvalue()
+            return Response(content=thumb_bytes, media_type="image/jpeg")
+
+        # Fallback: crop from overview image.
         jpeg_path = overview_dir / f"{scenario_id}.jpg"
         bounds_path = overview_dir / f"{scenario_id}.json"
 
@@ -694,11 +806,9 @@ def create_web_app(
                 detail=f"Thumbnail not available for scenario '{scenario_id}'",
             )
 
-        # Load overview image and bounds.
         img = PILImage.open(str(jpeg_path))
         img_w, img_h = img.size
 
-        # Read bounds metadata.
         x_min = y_min = 0.0
         x_max = float(img_w)
         y_max = float(img_h)
@@ -712,7 +822,6 @@ def create_web_app(
             except (json.JSONDecodeError, KeyError, ValueError):
                 pass
 
-        # Get scenario start position.
         try:
             scenario = session_mgr.scenario_loader.get(scenario_id)
         except FileNotFoundError:
@@ -721,14 +830,11 @@ def create_web_app(
         start_x = scenario.start.x
         start_y = scenario.start.y
 
-        # Convert world coords to pixel coords.
         world_w = x_max - x_min if x_max != x_min else 1.0
         world_h = y_max - y_min if y_max != y_min else 1.0
         px = (start_x - x_min) / world_w * img_w
-        py = (1.0 - (start_y - y_min) / world_h) * img_h  # flip Y
+        py = (1.0 - (start_y - y_min) / world_h) * img_h
 
-        # Crop a square region centered on start position.
-        # Use ~25% of the image dimension as crop radius for a nice zoom.
         crop_radius = int(min(img_w, img_h) * 0.25)
         cx, cy = int(px), int(py)
 
@@ -737,7 +843,6 @@ def create_web_app(
         right = min(img_w, cx + crop_radius)
         bottom = min(img_h, cy + crop_radius)
 
-        # Ensure square crop.
         side = min(right - left, bottom - top)
         if right - left > side:
             left = cx - side // 2
@@ -746,14 +851,12 @@ def create_web_app(
             top = cy - side // 2
             bottom = top + side
 
-        # Clamp.
         left = max(0, left)
         top = max(0, top)
         right = min(img_w, left + side)
         bottom = min(img_h, top + side)
 
         cropped = img.crop((left, top, right, bottom))
-        # Resize to requested size.
         size = min(size, 800)
         cropped = cropped.resize((size, size), PILImage.LANCZOS)
 

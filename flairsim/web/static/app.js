@@ -212,20 +212,28 @@ function renderScenarioCard(s) {
         starsHtml += '</span>';
     }
 
-    // Specs as rounded badges
-    let tagsHtml = '<div class="scenario-tags">';
-    if (domain) tagsHtml += '<span class="tag tag-domain">' + escapeHtml(domain) + '</span>';
-    if (roi) tagsHtml += '<span class="tag">' + escapeHtml(roi) + '</span>';
-    environment.forEach(e => {
-        tagsHtml += '<span class="tag tag-env">' + escapeHtml(e) + '</span>';
-    });
-    modalities.forEach(m => {
-        tagsHtml += '<span class="tag tag-mod">' + escapeHtml(m) + '</span>';
-    });
-    tagsHtml += '<span class="tag tag-steps">' + escapeHtml(String(maxSteps)) + ' steps</span>';
-    tagsHtml += '</div>';
+    // Specs table with badge values
+    let specsHtml = '<table class="scenario-specs">';
+    if (domain) specsHtml += '<tr><td class="spec-label">Domain</td><td class="spec-value"><span class="tag tag-domain">' + escapeHtml(domain) + '</span></td></tr>';
+    if (roi) specsHtml += '<tr><td class="spec-label">ROI</td><td class="spec-value"><span class="tag tag-roi">' + escapeHtml(roi) + '</span></td></tr>';
+    specsHtml += '<tr><td class="spec-label">Environment</td><td class="spec-value">';
+    if (environment.length > 0) {
+        environment.forEach(e => { specsHtml += '<span class="tag tag-env">' + escapeHtml(e) + '</span> '; });
+    } else {
+        specsHtml += '-';
+    }
+    specsHtml += '</td></tr>';
+    specsHtml += '<tr><td class="spec-label">Modalities</td><td class="spec-value">';
+    if (modalities.length > 0) {
+        modalities.forEach(m => { specsHtml += '<span class="tag tag-mod">' + escapeHtml(m) + '</span> '; });
+    } else {
+        specsHtml += '-';
+    }
+    specsHtml += '</td></tr>';
+    specsHtml += '<tr><td class="spec-label">Max Steps</td><td class="spec-value"><span class="tag tag-steps">' + escapeHtml(String(maxSteps)) + '</span></td></tr>';
+    specsHtml += '</table>';
 
-    const thumbnailUrl = API_BASE + '/scenarios/' + encodeURIComponent(id) + '/thumbnail?size=400';
+    const thumbnailUrl = API_BASE + '/scenarios/' + encodeURIComponent(id) + '/thumbnail?size=300';
 
     return `
         <div class="scenario-card">
@@ -234,7 +242,7 @@ function renderScenarioCard(s) {
                 <img src="${thumbnailUrl}" alt="${escapeAttr(name)}" loading="lazy" onerror="this.parentElement.classList.add('thumb-error')">
             </div>
             <p class="scenario-desc">${escapeHtml(desc)}</p>
-            ${tagsHtml}
+            ${specsHtml}
             <div class="mini-leaderboard" id="mini-lb-${escapeAttr(id)}">
                 <h4>Top Runs</h4>
                 <div class="mini-leaderboard-empty">Loading...</div>
@@ -1640,20 +1648,6 @@ async function showRunDetail(runId) {
             metaEl.innerHTML += `<span style="color:var(--text-secondary);font-style:italic">${escapeHtml(run.reason)}</span>`;
         }
 
-        // Try to get computed score for this run
-        try {
-            const scoredData = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(run.scenario_id) + '?limit=200');
-            const scoredRun = (scoredData.runs || []).find(r => r.id === run.id);
-            if (scoredRun && scoredRun.score != null) {
-                const scoreEl = document.createElement('span');
-                scoreEl.className = 'score-badge';
-                scoreEl.textContent = 'Score: ' + scoredRun.score.toFixed(1);
-                metaEl.appendChild(scoreEl);
-            }
-        } catch (_) {
-            // Score display is optional
-        }
-
         // Score breakdown
         const breakdownContainer = document.getElementById('detail-score-breakdown');
         if (breakdownContainer) {
@@ -2027,14 +2021,15 @@ async function loadAboutPage() {
     html += '<h4>Successful Runs &mdash; S &isin; [0, 100]</h4>';
     html += '<p>When the agent correctly locates and declares the target found, the score rewards efficiency across three dimensions (distance, steps, time) plus a confidence bonus:</p>';
     html += '<pre class="formula">';
-    html += '<span class="var">S</span> = [ <span class="num">0.3</span> &middot; (<span class="var">D<sub>min</sub></span> / <span class="var">D<sub>agent</sub></span>)';
-    html += ' + <span class="num">0.3</span> &middot; (<span class="var">Step<sub>min</sub></span> / <span class="var">Step<sub>agent</sub></span>)';
-    html += ' + <span class="num">0.3</span> &middot; (<span class="var">t<sub>min</sub></span> / <span class="var">t<sub>agent</sub></span>)';
-    html += ' + <span class="num">0.1</span> &middot; <span class="var">c</span> ] &times; 100';
+    html += '<span class="var">S</span> = <span class="brace">[</span> ';
+    html += '<span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">D</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">D</span><sub>agent</sub></span></span>';
+    html += ' + <span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">Step</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">Step</span><sub>agent</sub></span></span>';
+    html += ' + <span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">t</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">t</span><sub>agent</sub></span></span>';
+    html += ' + <span class="num">0.1</span> &middot; <span class="var">c</span> <span class="brace">]</span> &times; 100';
     html += '</pre>';
 
     html += '<ul class="formula-defs">';
-    html += '<li><code>D<sub>min</sub></code> &mdash; Minimum distance travelled across all successful runs for this scenario (benchmark reference)</li>';
+    html += '<li><code>D<sub>min</sub></code> &mdash; Euclidean (straight-line) distance between the scenario start position and the target position. This is a fixed geometric property of the scenario, representing the shortest possible path.</li>';
     html += '<li><code>D<sub>agent</sub></code> &mdash; Total distance travelled by the current agent\'s run</li>';
     html += '<li><code>Step<sub>min</sub></code> &mdash; Minimum steps taken across all successful runs for this scenario</li>';
     html += '<li><code>Step<sub>agent</sub></code> &mdash; Steps taken by the current agent</li>';
@@ -2044,7 +2039,8 @@ async function loadAboutPage() {
     html += '</ul>';
 
     html += '<div class="about-note">';
-    html += '<strong>Reference minimums</strong> (D<sub>min</sub>, Step<sub>min</sub>, t<sub>min</sub>) are dynamically computed as the best values across <em>all</em> successful runs recorded for each scenario. ';
+    html += '<strong>Reference values:</strong> D<sub>min</sub> is the Euclidean distance from start to target (fixed per scenario). ';
+    html += 'Step<sub>min</sub> and t<sub>min</sub> are dynamically computed as the best values across <em>all</em> successful runs recorded for each scenario. ';
     html += 'As more agents complete runs, these references may improve, recalibrating scores for future runs. ';
     html += 'Each ratio is capped at 1.0, so an agent can never exceed the "perfect" baseline on any single dimension.';
     html += '</div>';
@@ -2055,8 +2051,8 @@ async function loadAboutPage() {
     html += '<h4>Failed Runs &mdash; F &isin; [-100, 0]</h4>';
     html += '<p>When the agent fails to locate the target (step limit reached, or manual stop), the score penalises lack of exploration and overconfidence:</p>';
     html += '<pre class="formula">';
-    html += '<span class="var">F</span> = -100 &times; [ <span class="num">0.5</span> &middot; (1 - <span class="var">E</span>)';
-    html += ' + <span class="num">0.5</span> &middot; <span class="var">c</span> ]';
+    html += '<span class="var">F</span> = &minus;100 &times; <span class="brace">[</span> <span class="num">0.5</span> &middot; (1 &minus; <span class="var">E</span>)';
+    html += ' + <span class="num">0.5</span> &middot; <span class="var">c</span> <span class="brace">]</span>';
     html += '</pre>';
 
     html += '<ul class="formula-defs">';
@@ -2112,10 +2108,6 @@ async function loadAboutPage() {
     html += '<a href="https://github.com/gorreclu/flairsim" target="_blank" class="about-link-btn">';
     html += '<svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
     html += 'GitHub Repository';
-    html += '</a>';
-    html += '<a href="https://arxiv.org" target="_blank" class="about-link-btn">';
-    html += '<svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>';
-    html += 'arXiv Paper (coming soon)';
     html += '</a>';
     html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" class="about-link-btn">';
     html += '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
