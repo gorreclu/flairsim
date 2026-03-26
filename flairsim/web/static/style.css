@@ -742,6 +742,15 @@ kbd {
     font-size: 0.7rem;
 }
 
+.mini-lb-score {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    min-width: 28px;
+    text-align: right;
+    margin-right: 4px;
+}
+
 .mini-lb-result {
     margin-left: 6px;
     font-size: 0.65rem;
@@ -1185,4 +1194,54 @@ kbd {
     .stat-value {
         font-size: 1.2rem;
     }
+}
+
+/* --- Leaderboard tabs --- */
+.lb-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+}
+
+.lb-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 8px 18px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+    margin-bottom: -1px;
+    border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.lb-tab:hover {
+    color: var(--text-primary);
+}
+
+.lb-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    background: rgba(0, 212, 255, 0.05);
+}
+
+.lb-panel {
+    /* No extra spacing needed; content fills naturally */
+}
+
+/* --- Score badge in run detail --- */
+.score-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    background: rgba(0, 212, 255, 0.15);
+    color: var(--accent);
+    border: 1px solid rgba(0, 212, 255, 0.3);
 }

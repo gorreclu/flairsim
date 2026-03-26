@@ -59,7 +59,7 @@ function navigateTo(view, params) {
     } else if (view === 'processes') {
         loadProcesses();
     } else if (view === 'leaderboard') {
-        loadLeaderboard();
+        loadGlobalLeaderboard();
     }
 
     window.location.hash = view;
@@ -241,7 +241,7 @@ async function loadMiniLeaderboard(scenarioId) {
     if (!container) return;
 
     try {
-        const data = await fetchLeaderboard(scenarioId, null, 5);
+        const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + '?limit=5');
         const runs = data.runs || [];
         if (runs.length === 0) {
             container.innerHTML = '<h4>Top Runs</h4><div class="mini-leaderboard-empty">No runs yet</div>';
@@ -252,12 +252,12 @@ async function loadMiniLeaderboard(scenarioId) {
             const name = r.player_name || r.model_name || 'Anon';
             const resultCls = r.success ? 'result-success' : 'result-fail';
             const resultTxt = r.success ? 'OK' : 'FAIL';
-            const steps = r.steps_taken != null ? r.steps_taken : '-';
+            const score = r.score != null ? r.score.toFixed(0) : '-';
             html += `
                 <div class="mini-lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
                     <span class="mini-lb-rank">${i + 1}.</span>
                     <span class="mini-lb-name">${escapeHtml(name)}</span>
-                    <span class="mini-lb-steps">${steps} steps</span>
+                    <span class="mini-lb-score">${escapeHtml(score)}</span>
                     <span class="mini-lb-result ${resultCls}">${resultTxt}</span>
                 </div>
             `;
@@ -316,8 +316,9 @@ async function startPlay(scenarioId) {
 
 function showScenarioLeaderboard(scenarioId) {
     navigateTo('leaderboard');
-    // Set the filter to this scenario once the view loads
+    // Switch to scenario tab and set the filter to this scenario
     setTimeout(() => {
+        switchLbTab('scenario');
         const select = document.getElementById('lb-filter-scenario');
         if (select) {
             select.value = scenarioId;
@@ -478,6 +479,55 @@ async function destroyProcessSession(sessionId) {
 // Full Leaderboard View
 // ===================================================================
 
+function switchLbTab(tab) {
+    const tabs = ['global', 'scenario'];
+    tabs.forEach(t => {
+        document.getElementById('lb-tab-' + t).classList.toggle('active', t === tab);
+        document.getElementById('lb-panel-' + t).hidden = t !== tab;
+    });
+    if (tab === 'global') {
+        loadGlobalLeaderboard();
+    } else {
+        loadLeaderboard();
+    }
+}
+
+async function loadGlobalLeaderboard() {
+    const container = document.getElementById('lb-global-container');
+    container.innerHTML = '<div class="loading-msg">Loading...</div>';
+    try {
+        const data = await apiFetch('/leaderboard/global?limit=100');
+        const entries = data.leaderboard || [];
+        if (entries.length === 0) {
+            container.innerHTML = '<div class="empty-msg">No runs yet.</div>';
+            return;
+        }
+        let html = `
+            <table class="leaderboard-table">
+                <thead><tr>
+                    <th>#</th>
+                    <th>Agent</th>
+                    <th>Score</th>
+                    <th>Scenarios</th>
+                </tr></thead>
+                <tbody>
+        `;
+        entries.forEach((e, i) => {
+            const score = e.total_score != null ? e.total_score.toFixed(1) : '-';
+            html += `<tr>
+                <td>${i + 1}</td>
+                <td>${escapeHtml(e.agent_name || '-')}</td>
+                <td>${escapeHtml(score)}</td>
+                <td>${e.scenarios_attempted || 0}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
+    }
+}
+
 async function loadLeaderboard() {
     const container = document.getElementById('leaderboard-table-container');
     const scenarioSelect = document.getElementById('lb-filter-scenario');
@@ -506,8 +556,22 @@ async function loadLeaderboard() {
     const mode = modeSelect.value || null;
 
     try {
-        const data = await fetchLeaderboard(scenarioId, mode, 100);
-        const runs = data.runs || [];
+        let runs = [];
+        let usedScoredEndpoint = false;
+
+        if (scenarioId) {
+            // Use the scored per-scenario endpoint when a scenario is selected
+            const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + '?limit=100');
+            runs = data.runs || [];
+            usedScoredEndpoint = true;
+            // Apply mode filter client-side since scored endpoint doesn't support it
+            if (mode) {
+                runs = runs.filter(r => r.mode === mode);
+            }
+        } else {
+            const data = await fetchLeaderboard(scenarioId, mode, 100);
+            runs = data.runs || [];
+        }
 
         if (runs.length === 0) {
             container.innerHTML = '<div class="empty-msg">No runs found.</div>';
@@ -523,6 +587,7 @@ async function loadLeaderboard() {
                         <th>Scenario</th>
                         <th>Mode</th>
                         <th>Result</th>
+                        <th>Score</th>
                         <th>Steps</th>
                         <th>Distance</th>
                         <th>Duration</th>
@@ -545,6 +610,7 @@ async function loadLeaderboard() {
                 return sc ? (sc.name || r.scenario_id) : r.scenario_id;
             })();
             const modeLabel = r.mode === 'ai' ? 'AI' : 'Human';
+            const score = r.score != null ? r.score.toFixed(1) : '-';
 
             html += `
                 <tr class="lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
@@ -553,6 +619,7 @@ async function loadLeaderboard() {
                     <td>${escapeHtml(scenarioName)}</td>
                     <td>${modeLabel}</td>
                     <td><span class="${resultCls}">${resultTxt}</span></td>
+                    <td>${escapeHtml(score)}</td>
                     <td>${steps}</td>
                     <td>${dist}</td>
                     <td>${dur}</td>
@@ -836,6 +903,7 @@ class GameEngine {
                 y: ds.y || 0,
                 z: ds.z || 0,
                 step: this.step,
+                footprint: 2 * (ds.z || 0),  // ground coverage at FOV=90deg: width = 2*altitude
             });
             // Release processing lock — the smooth movement is complete.
             this._processing = false;
@@ -1353,6 +1421,7 @@ async function submitRun() {
     const durationSec = startTime ? ((Date.now() - startTime) / 1000) : 0;
     const playerName = document.getElementById('result-player-name').value.trim();
 
+    const metrics = computeRunMetrics(trajectory);
     const runData = {
         session_id: session ? session.session_id : null,
         scenario_id: session ? session.scenario_id : '',
@@ -1368,6 +1437,10 @@ async function submitRun() {
         trajectory: trajectory,
         steps_detail: stepsDetail.length > 0 ? stepsDetail : null,
         model_info: session && session._modelInfo ? session._modelInfo : null,
+        confidence: 1.0,                          // humans are always confident
+        fov_coverage: metrics.fov_coverage,
+        target_seen: result.target_in_view != null ? result.target_in_view : null,
+        metrics: { fov_coverage: metrics.fov_coverage, unique_cells: metrics.unique_cells_count },
     };
 
     try {
@@ -1378,6 +1451,56 @@ async function submitRun() {
         btn.textContent = 'Error: ' + err.message;
         btn.disabled = false;
     }
+}
+
+/**
+ * Compute run metrics from the trajectory array.
+ * Each trajectory point: {x, y, z, step, footprint}
+ *
+ * Returns: {fov_coverage, unique_cells_count}
+ * - fov_coverage: fraction of unique 10m grid cells covered vs total cells in bounding box
+ *   (0.0 if trajectory empty or bounding box has zero area)
+ * - unique_cells_count: number of distinct 10m grid cells covered
+ */
+function computeRunMetrics(traj) {
+    if (!traj || traj.length === 0) {
+        return { fov_coverage: 0.0, unique_cells_count: 0 };
+    }
+
+    const CELL_SIZE = 10;  // 10m grid cells
+    const coveredCells = new Set();
+
+    for (const p of traj) {
+        const halfWidth = (p.footprint || 0) / 2;
+        if (halfWidth <= 0) continue;
+
+        // Cells covered by this footprint square centered at (p.x, p.y)
+        const xMin = Math.floor((p.x - halfWidth) / CELL_SIZE);
+        const xMax = Math.floor((p.x + halfWidth) / CELL_SIZE);
+        const yMin = Math.floor((p.y - halfWidth) / CELL_SIZE);
+        const yMax = Math.floor((p.y + halfWidth) / CELL_SIZE);
+
+        for (let cx = xMin; cx <= xMax; cx++) {
+            for (let cy = yMin; cy <= yMax; cy++) {
+                coveredCells.add(cx + ',' + cy);
+            }
+        }
+    }
+
+    // Bounding box of the trajectory
+    const xs = traj.map(p => p.x);
+    const ys = traj.map(p => p.y);
+    const xSpan = Math.max(...xs) - Math.min(...xs);
+    const ySpan = Math.max(...ys) - Math.min(...ys);
+
+    const totalCellsX = Math.max(1, Math.ceil((xSpan + 2 * (traj[0].footprint || 0)) / CELL_SIZE));
+    const totalCellsY = Math.max(1, Math.ceil((ySpan + 2 * (traj[0].footprint || 0)) / CELL_SIZE));
+    const totalCells = totalCellsX * totalCellsY;
+
+    return {
+        fov_coverage: Math.min(1.0, coveredCells.size / totalCells),
+        unique_cells_count: coveredCells.size,
+    };
 }
 
 async function playAgain() {
@@ -1433,6 +1556,20 @@ async function showRunDetail(runId) {
         `;
         if (run.reason) {
             metaEl.innerHTML += `<span style="color:var(--text-secondary);font-style:italic">${escapeHtml(run.reason)}</span>`;
+        }
+
+        // Try to get computed score for this run
+        try {
+            const scoredData = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(run.scenario_id) + '?limit=200');
+            const scoredRun = (scoredData.runs || []).find(r => r.id === run.id);
+            if (scoredRun && scoredRun.score != null) {
+                const scoreEl = document.createElement('span');
+                scoreEl.className = 'score-badge';
+                scoreEl.textContent = 'Score: ' + scoredRun.score.toFixed(1);
+                metaEl.appendChild(scoreEl);
+            }
+        } catch (_) {
+            // Score display is optional
         }
 
         // Overview image + trajectory SVG overlay

@@ -516,8 +516,71 @@ def create_web_app(
         run_id = leaderboard.submit_run(body)
         return {"run_id": run_id}
 
+    # ---------------------------------------------------------------
+    # Agents
+    # ---------------------------------------------------------------
+
+    @app.post("/api/agents")
+    async def create_agent(request: Request) -> Dict[str, Any]:
+        """Create a new agent profile."""
+        body = await request.json()
+        name: Optional[str] = body.get("name")
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        specs: Optional[Dict[str, Any]] = body.get("specs")
+        try:
+            leaderboard.create_agent(name, specs)
+        except ValueError:
+            raise HTTPException(status_code=409, detail="Agent already exists")
+        return {"name": name, "created": True}
+
+    @app.put("/api/agents/{name}")
+    async def update_agent(name: str, request: Request) -> Dict[str, Any]:
+        """Update an existing agent's specs."""
+        body = await request.json()
+        specs: Optional[Dict[str, Any]] = body.get("specs")
+        try:
+            leaderboard.update_agent(name, specs)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return {"name": name, "updated": True}
+
+    @app.get("/api/agents/{name}")
+    async def get_agent(name: str) -> Dict[str, Any]:
+        """Get an agent profile by name."""
+        agent = leaderboard.get_agent(name)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return agent
+
+    # ---------------------------------------------------------------
+    # Global and per-scenario leaderboards (must be BEFORE /{run_id})
+    # ---------------------------------------------------------------
+
+    @app.get("/api/leaderboard/global")
+    async def get_global_leaderboard(limit: int = 50) -> Dict[str, Any]:
+        """Global cross-scenario agent ranking."""
+        scenario_ids = session_mgr.scenario_loader.list_ids()
+        entries = leaderboard.get_global_leaderboard(scenario_ids, limit=limit)
+        return {"leaderboard": entries}
+
+    @app.get("/api/leaderboard/scenario/{scenario_id}")
+    async def get_scenario_leaderboard(
+        scenario_id: str, limit: int = 50
+    ) -> Dict[str, Any]:
+        """Per-scenario scored leaderboard, sorted by score DESC."""
+        # Fetch all runs first; apply limit after scoring so we rank correctly.
+        all_runs = leaderboard.get_runs(scenario_id=scenario_id, limit=1000)
+        scored_runs = []
+        for run in all_runs:
+            run_copy = dict(run)
+            run_copy["score"] = leaderboard.compute_score_for_run(run_copy, scenario_id)
+            scored_runs.append(run_copy)
+        scored_runs.sort(key=lambda r: r["score"], reverse=True)
+        return {"scenario_id": scenario_id, "runs": scored_runs[:limit]}
+
     @app.get("/api/leaderboard/{run_id}")
-    async def get_leaderboard_run(run_id: str):
+    async def get_leaderboard_run(run_id: str) -> Dict[str, Any]:
         run = leaderboard.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")

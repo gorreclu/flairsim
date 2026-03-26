@@ -14,6 +14,7 @@
         <header class="top-bar">
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
             </nav>
         </header>
@@ -148,22 +149,39 @@
 
         <div class="leaderboard-content">
             <h2>Leaderboard</h2>
-            <div class="leaderboard-filters">
-                <label>Scenario
-                    <select id="lb-filter-scenario">
-                        <option value="">All scenarios</option>
-                    </select>
-                </label>
-                <label>Mode
-                    <select id="lb-filter-mode">
-                        <option value="">All modes</option>
-                        <option value="human">Human</option>
-                        <option value="ai">AI</option>
-                    </select>
-                </label>
+
+            <!-- Tab switcher -->
+            <div class="lb-tabs">
+                <button id="lb-tab-global" class="lb-tab active" onclick="switchLbTab('global')">Global Ranking</button>
+                <button id="lb-tab-scenario" class="lb-tab" onclick="switchLbTab('scenario')">Per Scenario</button>
             </div>
-            <div id="leaderboard-table-container" class="leaderboard-table-container">
-                <div class="loading-msg">Loading...</div>
+
+            <!-- Global ranking panel -->
+            <div id="lb-panel-global" class="lb-panel">
+                <div id="lb-global-container" class="leaderboard-table-container">
+                    <div class="loading-msg">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Per-scenario panel -->
+            <div id="lb-panel-scenario" class="lb-panel" hidden>
+                <div class="leaderboard-filters">
+                    <label>Scenario
+                        <select id="lb-filter-scenario">
+                            <option value="">All scenarios</option>
+                        </select>
+                    </label>
+                    <label>Mode
+                        <select id="lb-filter-mode">
+                            <option value="">All modes</option>
+                            <option value="human">Human</option>
+                            <option value="ai">AI</option>
+                        </select>
+                    </label>
+                </div>
+                <div id="leaderboard-table-container" class="leaderboard-table-container">
+                    <div class="loading-msg">Loading...</div>
+                </div>
             </div>
         </div>
     </section>

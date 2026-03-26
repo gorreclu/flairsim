@@ -579,3 +579,249 @@ class TestScenarioNewFields:
             data = resp.json()
             assert data["environment"] == ["urban", "forest"]
             assert data["difficulty"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Agent routes
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRoutes:
+    """Test POST /api/agents, PUT /api/agents/{name}, GET /api/agents/{name}."""
+
+    @pytest.mark.asyncio
+    async def test_create_agent_success(self, tmp_path):
+        """POST /api/agents with valid name -> 200 with name in response."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/agents",
+                json={"name": "agent-alpha", "specs": {"framework": "langchain"}},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["name"] == "agent-alpha"
+            assert data["created"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_agent_missing_name(self, tmp_path):
+        """POST /api/agents without name -> 400."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/agents", json={"specs": {}})
+            assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_agent_duplicate(self, tmp_path):
+        """POST /api/agents with same name twice -> second returns 409."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/agents", json={"name": "dup-agent"})
+            resp = await client.post("/api/agents", json={"name": "dup-agent"})
+            assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_update_agent_success(self, tmp_path):
+        """PUT /api/agents/{name} -> 200 with updated=true."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/agents", json={"name": "agent-beta"})
+            resp = await client.put(
+                "/api/agents/agent-beta",
+                json={"specs": {"version": "2.0"}},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["name"] == "agent-beta"
+            assert data["updated"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_agent_not_found(self, tmp_path):
+        """PUT /api/agents/ghost -> 404."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.put("/api/agents/ghost", json={"specs": {"x": 1}})
+            assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_agent_success(self, tmp_path):
+        """GET /api/agents/{name} after create -> 200 with correct specs."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(
+                "/api/agents",
+                json={"name": "agent-gamma", "specs": {"model": "gpt-4o"}},
+            )
+            resp = await client.get("/api/agents/agent-gamma")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["name"] == "agent-gamma"
+            assert data["specs"]["model"] == "gpt-4o"
+
+    @pytest.mark.asyncio
+    async def test_get_agent_not_found(self, tmp_path):
+        """GET /api/agents/ghost -> 404."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/agents/ghost")
+            assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Global leaderboard route
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalLeaderboardRoute:
+    """Test GET /api/leaderboard/global."""
+
+    @pytest.mark.asyncio
+    async def test_global_leaderboard_empty(self, tmp_path):
+        """GET /api/leaderboard/global with no runs -> 200 with empty list."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard/global")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data == {"leaderboard": []}
+
+    @pytest.mark.asyncio
+    async def test_global_leaderboard_with_run(self, tmp_path):
+        """Submit a successful run; global leaderboard returns 1 entry."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 20,
+                    "distance_travelled": 500.0,
+                    "player_name": "agent-x",
+                },
+            )
+            resp = await client.get("/api/leaderboard/global")
+            assert resp.status_code == 200
+            data = resp.json()
+            entries = data["leaderboard"]
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry["agent_name"] == "agent-x"
+            assert "total_score" in entry
+            assert "scenarios_attempted" in entry
+            assert "runs" in entry
+
+    @pytest.mark.asyncio
+    async def test_global_leaderboard_limit(self, tmp_path):
+        """limit=1 query param is respected."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for name in ("agent-1", "agent-2", "agent-3"):
+                await client.post(
+                    "/api/leaderboard",
+                    json={
+                        "scenario_id": "find_target_test",
+                        "mode": "ai",
+                        "success": True,
+                        "steps_taken": 10,
+                        "distance_travelled": 200.0,
+                        "player_name": name,
+                    },
+                )
+            resp = await client.get("/api/leaderboard/global?limit=1")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data["leaderboard"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-scenario scored leaderboard route
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioLeaderboardRoute:
+    """Test GET /api/leaderboard/scenario/{scenario_id}."""
+
+    @pytest.mark.asyncio
+    async def test_scenario_leaderboard_empty(self, tmp_path):
+        """GET /api/leaderboard/scenario/find_target_test with no runs -> empty runs."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard/scenario/find_target_test")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["scenario_id"] == "find_target_test"
+            assert data["runs"] == []
+
+    @pytest.mark.asyncio
+    async def test_scenario_leaderboard_with_run(self, tmp_path):
+        """Submit a run; scenario leaderboard returns it with a score key."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 30,
+                    "distance_travelled": 600.0,
+                    "player_name": "agent-run",
+                },
+            )
+            resp = await client.get("/api/leaderboard/scenario/find_target_test")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["scenario_id"] == "find_target_test"
+            assert len(data["runs"]) == 1
+            assert "score" in data["runs"][0]
+
+    @pytest.mark.asyncio
+    async def test_scenario_leaderboard_sorted_by_score(self, tmp_path):
+        """Two runs with different scores -> sorted DESC by score."""
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Run 1: success, fewer steps (better score)
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 5,
+                    "distance_travelled": 100.0,
+                    "player_name": "fast-agent",
+                },
+            )
+            # Run 2: failure (lower / negative score)
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": False,
+                    "steps_taken": 100,
+                    "distance_travelled": 2000.0,
+                    "player_name": "slow-agent",
+                },
+            )
+            resp = await client.get("/api/leaderboard/scenario/find_target_test")
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            assert len(runs) == 2
+            # First run should have higher score
+            assert runs[0]["score"] >= runs[1]["score"]
