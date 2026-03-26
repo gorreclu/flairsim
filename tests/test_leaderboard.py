@@ -581,6 +581,8 @@ class TestScoringFunctions:
         """Best run (steps=10, dist=100, t=10) inserted first.
 
         Worse run (steps=20, dist=200, t=20) should score < 100.
+        D_min (Euclidean start-to-target distance) is passed as 100.0
+        so the distance ratio for the worse run is 100/200 = 0.5.
         """
         lb.submit_run(
             _make_success_run(
@@ -601,8 +603,9 @@ class TestScoringFunctions:
             )
         )
         worse_run = lb.get_run(worse_id)
-        score = lb.compute_score_for_run(worse_run, "sc_worse")
-        # Each ratio is 0.5, confidence=1 → (0.3×0.5 + 0.3×0.5 + 0.3×0.5 + 0.1×1)×100 = 55
+        score = lb.compute_score_for_run(worse_run, "sc_worse", d_min=100.0)
+        # d_min/D_agent=100/200=0.5, step ratio=0.5, time ratio=0.5, conf=1
+        # → (0.3×0.5 + 0.3×0.5 + 0.3×0.5 + 0.1×1)×100 = 55
         assert score == pytest.approx(55.0)
         assert score < 100.0
 

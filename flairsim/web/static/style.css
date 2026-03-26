@@ -203,12 +203,13 @@ body {
 .scenario-specs {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.72rem;
+    font-size: 0.75rem;
 }
 
 .scenario-specs td {
-    padding: 2px 6px;
+    padding: 4px 6px;
     border-bottom: 1px solid var(--border);
+    vertical-align: middle;
 }
 
 .scenario-specs tr:last-child td {
@@ -224,8 +225,10 @@ body {
 
 .spec-value {
     color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
+}
+
+.spec-value .tag {
+    font-size: 0.68rem;
 }
 
 .scenario-meta {
@@ -973,14 +976,26 @@ kbd {
     padding: 10px 24px;
 }
 
-/* --- Run Detail view: 2-column layout --- */
+/* --- Run Detail view: header + 2-column layout --- */
+.detail-header {
+    padding: 20px 32px 0;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.detail-header h2 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
 .detail-layout {
     display: flex;
     gap: 24px;
-    padding: 24px 32px;
+    padding: 16px 32px 24px;
     max-width: 1400px;
     margin: 0 auto;
-    min-height: calc(100vh - 60px);
+    min-height: calc(100vh - 140px);
 }
 
 .detail-left {
@@ -991,9 +1006,26 @@ kbd {
     gap: 12px;
 }
 
-.detail-left h2 {
-    font-size: 1.2rem;
+.detail-right {
+    width: 380px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    max-height: calc(100vh - 160px);
+}
+
+.detail-right h3 {
+    font-size: 0.95rem;
     font-weight: 600;
+    color: var(--text-primary);
+}
+
+.detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .detail-meta {
@@ -1007,22 +1039,6 @@ kbd {
 
 .detail-meta .tag {
     font-size: 0.7rem;
-}
-
-.detail-right {
-    width: 340px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    overflow-y: auto;
-    max-height: calc(100vh - 100px);
-}
-
-.detail-right h3 {
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: var(--text-primary);
 }
 
 /* --- Overview container with SVG overlay --- */
@@ -1429,25 +1445,59 @@ kbd {
 
 .formula {
     font-family: var(--font-mono);
-    font-size: 0.82rem;
+    font-size: 0.88rem;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 12px 16px;
+    padding: 18px 20px;
     overflow-x: auto;
     color: var(--accent);
     margin: 8px 0 12px;
-    line-height: 1.6;
+    line-height: 2.4;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
 }
 
 /* Formula variable highlights */
 .formula .var {
     color: #ffaa32;
     font-weight: 600;
+    font-style: italic;
 }
 
 .formula .num {
     color: var(--text-primary);
+}
+
+.formula .brace {
+    color: var(--text-secondary);
+    font-size: 1.1em;
+}
+
+/* Inline fraction rendering */
+.formula .frac {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    vertical-align: middle;
+    margin: 0 2px;
+}
+
+.formula .frac-num,
+.formula .frac-den {
+    line-height: 1.2;
+    padding: 0 4px;
+    font-size: 0.82em;
+}
+
+.formula .frac-bar {
+    display: block;
+    width: 100%;
+    height: 1px;
+    background: var(--accent);
+    margin: 1px 0;
 }
 
 /* Variable definition list below formulas */
@@ -1556,7 +1606,8 @@ kbd {
     overflow: hidden;
     border: 1px solid var(--border);
     line-height: 0;
-    aspect-ratio: 1 / 1;
+    aspect-ratio: 4 / 3;
+    max-height: 180px;
     background: var(--bg-secondary);
 }
 
@@ -1596,6 +1647,12 @@ kbd {
     background: rgba(0, 180, 255, 0.1);
     color: #00b4ff;
     border-color: rgba(0, 180, 255, 0.2);
+}
+
+.tag-roi {
+    background: rgba(255, 200, 50, 0.1);
+    color: #ffc832;
+    border-color: rgba(255, 200, 50, 0.2);
 }
 
 .tag-steps {

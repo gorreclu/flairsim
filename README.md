@@ -231,7 +231,7 @@ S = [ 0.3 · (D_min / D_agent)
 
 | Variable | Description |
 |----------|-------------|
-| `D_min` | Minimum distance travelled across all successful runs for this scenario |
+| `D_min` | Euclidean (straight-line) distance between the scenario start position and the target position |
 | `D_agent` | Distance travelled by the current agent |
 | `Step_min` | Minimum steps taken across all successful runs for this scenario |
 | `Step_agent` | Steps taken by the current agent |
@@ -239,7 +239,7 @@ S = [ 0.3 · (D_min / D_agent)
 | `t_agent` | Duration of the current agent's run |
 | `c` | Confidence (0–1) optionally declared by the agent; defaults to 0 |
 
-Reference minimums are dynamically recomputed as new successful runs are recorded. Each efficiency ratio is capped at 1.0.
+Reference values: D_min is a fixed geometric property of the scenario (Euclidean distance from start to target). Step_min and t_min are dynamically recomputed as new successful runs are recorded. Each efficiency ratio is capped at 1.0.
 
 ### Failed Runs — F ∈ [-100, 0]
 
