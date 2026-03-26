@@ -179,9 +179,53 @@ body {
 
 .scenario-card .scenario-desc {
     color: var(--text-secondary);
-    font-size: 0.875rem;
-    line-height: 1.5;
-    flex: 1;
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
+/* --- Scenario overview image --- */
+.scenario-overview {
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    line-height: 0;
+}
+
+.scenario-overview img {
+    width: 100%;
+    height: auto;
+    display: block;
+    object-fit: cover;
+    max-height: 180px;
+}
+
+/* --- Scenario specs table --- */
+.scenario-specs {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+}
+
+.scenario-specs td {
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--border);
+}
+
+.scenario-specs tr:last-child td {
+    border-bottom: none;
+}
+
+.spec-label {
+    color: var(--text-muted);
+    font-weight: 500;
+    white-space: nowrap;
+    width: 80px;
+}
+
+.spec-value {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
 }
 
 .scenario-meta {
@@ -1244,4 +1288,213 @@ kbd {
     background: rgba(0, 212, 255, 0.15);
     color: var(--accent);
     border: 1px solid rgba(0, 212, 255, 0.3);
+}
+
+/* --- Leaderboard sub-tabs (AI / Human) --- */
+.lb-sub-tabs {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.lb-sub-tab {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: all 0.2s var(--transition);
+}
+
+.lb-sub-tab:hover {
+    border-color: var(--accent-dim);
+    color: var(--text-primary);
+}
+
+.lb-sub-tab.active {
+    background: rgba(0, 212, 255, 0.1);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* --- Agent link (clickable names in tables) --- */
+.agent-link {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.15s;
+}
+
+.agent-link:hover {
+    color: var(--accent-dim);
+    text-decoration: underline;
+}
+
+/* --- Agent Page --- */
+.agent-page-content {
+    padding: 32px;
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+.agent-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.agent-header h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+.agent-rank {
+    font-size: 1rem;
+    color: var(--text-secondary);
+}
+
+.agent-stats {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+}
+
+/* --- About Page --- */
+.about-page-content {
+    padding: 32px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.about-page-content h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 12px;
+}
+
+.about-page-content h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-top: 24px;
+    margin-bottom: 10px;
+    color: var(--text-primary);
+}
+
+.about-page-content h4 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-top: 12px;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+}
+
+.about-intro {
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+    line-height: 1.6;
+    margin-bottom: 8px;
+}
+
+.about-list {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    line-height: 1.8;
+    padding-left: 20px;
+    margin-bottom: 8px;
+}
+
+.about-scoring {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin: 8px 0;
+}
+
+.about-scoring p {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+
+.formula {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    overflow-x: auto;
+    color: var(--accent);
+    margin: 6px 0 10px;
+}
+
+/* --- Score Breakdown (run detail) --- */
+.score-breakdown {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+}
+
+.score-breakdown h4 {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+.breakdown-total {
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+.breakdown-components {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.breakdown-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.breakdown-row:last-child {
+    border-bottom: none;
+}
+
+.breakdown-label {
+    flex: 1;
+    color: var(--text-secondary);
+}
+
+.breakdown-weight {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    min-width: 36px;
+    text-align: center;
+}
+
+.breakdown-contrib {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 48px;
+    text-align: right;
 }

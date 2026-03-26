@@ -891,3 +891,123 @@ class TestScoringFunctions:
         run = lb.get_run(run_id)
         score = lb.compute_score_for_run(run, "sc_conf_none_s")
         assert score == pytest.approx(90.0)
+
+
+# ---------------------------------------------------------------------------
+# Score breakdown
+# ---------------------------------------------------------------------------
+
+
+class TestComputeScoreBreakdown:
+    """Tests for Leaderboard.compute_score_breakdown()."""
+
+    def test_breakdown_success(self, lb):
+        """Successful run should return a breakdown with 4 components,
+        reference_mins, and success=True."""
+        run_id = lb.submit_run(
+            _make_run(
+                scenario_id="sc_breakdown_ok",
+                mode="ai",
+                success=True,
+                steps_taken=10,
+                distance_travelled=100.0,
+                duration_s=8.0,
+                confidence=0.9,
+            )
+        )
+        run = lb.get_run(run_id)
+        bd = lb.compute_score_breakdown(run, "sc_breakdown_ok")
+
+        assert bd["success"] is True
+        assert isinstance(bd["total"], float)
+        assert bd["total"] > 0
+
+        # 4 components: distance, steps, time, confidence
+        assert len(bd["components"]) == 4
+        names = {c["name"] for c in bd["components"]}
+        assert names == {"distance", "steps", "time", "confidence"}
+
+        # Each component has required keys
+        for c in bd["components"]:
+            assert "weight" in c
+            assert "contribution" in c
+
+        # Reference mins present
+        assert "reference_mins" in bd
+        assert "distance" in bd["reference_mins"]
+        assert "steps" in bd["reference_mins"]
+        assert "time" in bd["reference_mins"]
+
+    def test_breakdown_failure(self, lb):
+        """Failed run should return breakdown with 2 components and
+        success=False."""
+        run_id = lb.submit_run(
+            _make_run(
+                scenario_id="sc_breakdown_fail",
+                mode="human",
+                success=False,
+                steps_taken=50,
+                distance_travelled=500.0,
+                duration_s=30.0,
+                confidence=0.7,
+                fov_coverage=0.4,
+                target_seen=False,
+            )
+        )
+        run = lb.get_run(run_id)
+        bd = lb.compute_score_breakdown(run, "sc_breakdown_fail")
+
+        assert bd["success"] is False
+        assert isinstance(bd["total"], float)
+        assert bd["total"] <= 0
+
+        # 2 components: exploration + confidence
+        assert len(bd["components"]) == 2
+        names = {c["name"] for c in bd["components"]}
+        assert names == {"exploration", "confidence"}
+
+        assert bd["target_seen"] is False
+
+    def test_breakdown_failure_target_seen(self, lb):
+        """Failed run with target_seen=True should include the penalty
+        multiplier."""
+        run_id = lb.submit_run(
+            _make_run(
+                scenario_id="sc_breakdown_ts",
+                mode="ai",
+                success=False,
+                steps_taken=20,
+                distance_travelled=200.0,
+                duration_s=15.0,
+                confidence=0.5,
+                fov_coverage=0.3,
+                target_seen=True,
+            )
+        )
+        run = lb.get_run(run_id)
+        bd = lb.compute_score_breakdown(run, "sc_breakdown_ts")
+
+        assert bd["success"] is False
+        assert bd["target_seen"] is True
+        assert bd.get("target_seen_multiplier") == 1.5
+        # Score should be more negative than without target_seen
+        assert bd["total"] < -50
+
+    def test_breakdown_success_total_matches_score(self, lb):
+        """Breakdown total should equal compute_score_for_run for the
+        same successful run."""
+        run_id = lb.submit_run(
+            _make_run(
+                scenario_id="sc_breakdown_match",
+                mode="ai",
+                success=True,
+                steps_taken=15,
+                distance_travelled=120.0,
+                duration_s=12.0,
+                confidence=0.8,
+            )
+        )
+        run = lb.get_run(run_id)
+        score = lb.compute_score_for_run(run, "sc_breakdown_match")
+        bd = lb.compute_score_breakdown(run, "sc_breakdown_match")
+        assert bd["total"] == pytest.approx(score, abs=0.1)

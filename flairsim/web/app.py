@@ -566,11 +566,15 @@ def create_web_app(
 
     @app.get("/api/leaderboard/scenario/{scenario_id}")
     async def get_scenario_leaderboard(
-        scenario_id: str, limit: int = 50
+        scenario_id: str, mode: Optional[str] = None, limit: int = 50
     ) -> Dict[str, Any]:
-        """Per-scenario scored leaderboard, sorted by score DESC."""
+        """Per-scenario scored leaderboard, sorted by score DESC.
+
+        Optional ``mode`` query parameter (``ai`` or ``human``) filters
+        runs before scoring so only the requested category is ranked.
+        """
         # Fetch all runs first; apply limit after scoring so we rank correctly.
-        all_runs = leaderboard.get_runs(scenario_id=scenario_id, limit=1000)
+        all_runs = leaderboard.get_runs(scenario_id=scenario_id, mode=mode, limit=1000)
         scored_runs = []
         for run in all_runs:
             run_copy = dict(run)
@@ -578,6 +582,16 @@ def create_web_app(
             scored_runs.append(run_copy)
         scored_runs.sort(key=lambda r: r["score"], reverse=True)
         return {"scenario_id": scenario_id, "runs": scored_runs[:limit]}
+
+    @app.get("/api/leaderboard/{run_id}/breakdown")
+    async def get_run_breakdown(run_id: str) -> Dict[str, Any]:
+        """Return the detailed score breakdown for a single run."""
+        run = leaderboard.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        scenario_id = run["scenario_id"]
+        breakdown = leaderboard.compute_score_breakdown(run, scenario_id)
+        return breakdown
 
     @app.get("/api/leaderboard/{run_id}")
     async def get_leaderboard_run(run_id: str) -> Dict[str, Any]:

@@ -16,6 +16,7 @@
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
 
@@ -123,6 +124,7 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
 
@@ -144,6 +146,7 @@
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
 
@@ -171,13 +174,10 @@
                             <option value="">All scenarios</option>
                         </select>
                     </label>
-                    <label>Mode
-                        <select id="lb-filter-mode">
-                            <option value="">All modes</option>
-                            <option value="human">Human</option>
-                            <option value="ai">AI</option>
-                        </select>
-                    </label>
+                    <div class="lb-sub-tabs">
+                        <button class="lb-sub-tab active" id="lb-mode-ai" onclick="switchLbMode('ai')">AI Agents</button>
+                        <button class="lb-sub-tab" id="lb-mode-human" onclick="switchLbMode('human')">Human</button>
+                    </div>
                 </div>
                 <div id="leaderboard-table-container" class="leaderboard-table-container">
                     <div class="loading-msg">Loading...</div>
@@ -194,6 +194,7 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Back to Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
 
@@ -201,6 +202,7 @@
             <div class="detail-left">
                 <h2 id="detail-title">Run Detail</h2>
                 <div class="detail-meta" id="detail-meta"></div>
+                <div id="detail-score-breakdown"></div>
 
                 <div class="overview-container" id="overview-container">
                     <!-- Overview image + SVG overlay inserted by JS -->
@@ -221,6 +223,57 @@
             </div>
         </div>
     </section>
+
+    <!-- ============================================================ -->
+    <!-- AGENT PAGE VIEW                                               -->
+    <!-- ============================================================ -->
+    <section id="view-agent" class="view">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
+            </nav>
+        </header>
+        <div class="agent-page-content" id="agent-page-content">
+            <div class="loading-msg">Loading...</div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- ABOUT PAGE VIEW                                               -->
+    <!-- ============================================================ -->
+    <section id="view-about" class="view">
+        <header class="top-bar">
+            <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
+            <nav>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+            </nav>
+        </header>
+        <div class="about-page-content" id="about-page-content">
+            <div class="loading-msg">Loading...</div>
+        </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- PRE-PLAY MODAL                                                -->
+    <!-- ============================================================ -->
+    <div id="preplay-modal" class="modal-overlay" hidden>
+        <div class="modal">
+            <h2>Ready to Fly?</h2>
+            <p class="results-reason">Enter your name before starting the mission.</p>
+            <div class="results-form">
+                <input type="text" id="preplay-player-name" placeholder="Your name" maxlength="64" />
+            </div>
+            <div class="results-actions">
+                <button class="btn btn-primary" id="btn-preplay-start" onclick="confirmStartPlay()">Start Mission</button>
+                <button class="btn btn-ghost" onclick="cancelPreplay()">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <!-- ============================================================ -->
     <!-- RESULTS MODAL                                                 -->

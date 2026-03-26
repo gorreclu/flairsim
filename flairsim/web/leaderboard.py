@@ -476,6 +476,142 @@ class Leaderboard:
 
         return max(-100.0, min(0.0, raw))
 
+    def compute_score_breakdown(
+        self, run: Dict[str, Any], scenario_id: str
+    ) -> Dict[str, Any]:
+        """Compute a detailed score breakdown for a single run.
+
+        Returns a dict containing:
+        - ``total``: final score (same as :meth:`compute_score_for_run`)
+        - ``success``: whether the run was successful
+        - ``components``: list of dicts with ``name``, ``value``, ``weight``,
+          ``contribution`` for each scoring component
+        - ``reference_mins``: the per-scenario minimums used for ratios
+          (only for successful runs)
+
+        Parameters
+        ----------
+        run : dict
+            A run dict as returned by :meth:`get_run`.
+        scenario_id : str
+            The scenario the run belongs to.
+
+        Returns
+        -------
+        dict
+        """
+        is_success = bool(run.get("success"))
+
+        if is_success:
+            return self._breakdown_success(run, scenario_id)
+        return self._breakdown_failure(run)
+
+    def _breakdown_success(
+        self, run: Dict[str, Any], scenario_id: str
+    ) -> Dict[str, Any]:
+        """Build detailed breakdown for a successful run."""
+        mins = self._fetch_reference_mins(scenario_id)
+
+        WEIGHT_DIST = 0.3
+        WEIGHT_STEPS = 0.3
+        WEIGHT_TIME = 0.3
+        WEIGHT_CONF = 0.1
+
+        ratio_dist = self._safe_ratio(mins["dist"], run.get("distance_travelled"))
+        ratio_steps = self._safe_ratio(mins["steps"], run.get("steps_taken"))
+        ratio_time = self._safe_ratio(mins["time"], run.get("duration_s"))
+        conf = run.get("confidence")
+        confidence = conf if conf is not None else 0.0
+
+        components = [
+            {
+                "name": "distance",
+                "ratio": round(ratio_dist, 4),
+                "weight": WEIGHT_DIST,
+                "contribution": round(WEIGHT_DIST * ratio_dist * 100.0, 2),
+            },
+            {
+                "name": "steps",
+                "ratio": round(ratio_steps, 4),
+                "weight": WEIGHT_STEPS,
+                "contribution": round(WEIGHT_STEPS * ratio_steps * 100.0, 2),
+            },
+            {
+                "name": "time",
+                "ratio": round(ratio_time, 4),
+                "weight": WEIGHT_TIME,
+                "contribution": round(WEIGHT_TIME * ratio_time * 100.0, 2),
+            },
+            {
+                "name": "confidence",
+                "value": round(confidence, 4),
+                "weight": WEIGHT_CONF,
+                "contribution": round(WEIGHT_CONF * confidence * 100.0, 2),
+            },
+        ]
+
+        total = self._score_success_with_mins(run, mins)
+
+        return {
+            "total": round(total, 2),
+            "success": True,
+            "components": components,
+            "reference_mins": {
+                "distance": mins["dist"],
+                "steps": mins["steps"],
+                "time": mins["time"],
+            },
+        }
+
+    def _breakdown_failure(self, run: Dict[str, Any]) -> Dict[str, Any]:
+        """Build detailed breakdown for a failed run."""
+        WEIGHT_EXPLORE = 0.5
+        WEIGHT_CONF = 0.5
+        TARGET_SEEN_MULTIPLIER = 1.5
+
+        fov = run.get("fov_coverage")
+        exploration = fov if fov is not None else 0.0
+        conf = run.get("confidence")
+        confidence = conf if conf is not None else 0.0
+        target_seen = bool(run.get("target_seen"))
+
+        explore_contrib = WEIGHT_EXPLORE * (1.0 - exploration)
+        conf_contrib = WEIGHT_CONF * confidence
+        raw = -100.0 * (explore_contrib + conf_contrib)
+
+        multiplier_applied = False
+        if target_seen:
+            raw *= TARGET_SEEN_MULTIPLIER
+            multiplier_applied = True
+
+        total = max(-100.0, min(0.0, raw))
+
+        components = [
+            {
+                "name": "exploration",
+                "value": round(exploration, 4),
+                "weight": WEIGHT_EXPLORE,
+                "contribution": round(-100.0 * explore_contrib, 2),
+            },
+            {
+                "name": "confidence",
+                "value": round(confidence, 4),
+                "weight": WEIGHT_CONF,
+                "contribution": round(-100.0 * conf_contrib, 2),
+            },
+        ]
+
+        result: Dict[str, Any] = {
+            "total": round(total, 2),
+            "success": False,
+            "components": components,
+            "target_seen": target_seen,
+        }
+        if multiplier_applied:
+            result["target_seen_multiplier"] = TARGET_SEEN_MULTIPLIER
+
+        return result
+
     def get_best_runs_per_scenario(
         self, scenario_ids: List[str]
     ) -> Dict[str, Dict[str, Any]]:

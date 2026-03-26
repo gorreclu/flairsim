@@ -60,6 +60,8 @@ function navigateTo(view, params) {
         loadProcesses();
     } else if (view === 'leaderboard') {
         loadGlobalLeaderboard();
+    } else if (view === 'about') {
+        loadAboutPage();
     }
 
     window.location.hash = view;
@@ -74,6 +76,13 @@ function handleRoute() {
     }
     if (hash === 'run-detail' && !currentRunDetailId) {
         navigateTo('landing');
+        return;
+    }
+    // Agent page: #agent/{name}
+    if (hash.startsWith('agent/')) {
+        const agentName = decodeURIComponent(hash.substring(6));
+        navigateTo('agent');
+        loadAgentPage(agentName);
         return;
     }
     navigateTo(hash);
@@ -182,24 +191,12 @@ function renderScenarioCard(s) {
     const id = s.scenario_id || s.id;
     const name = s.name || id;
     const desc = s.description || '';
-    const domain = s.dataset ? s.dataset.domain : '';
+    const domain = s.dataset ? (s.dataset.domain || '') : '';
+    const roi = s.dataset ? (s.dataset.roi || '') : '';
     const modalities = s.dataset && s.dataset.modalities ? s.dataset.modalities : [];
     const maxSteps = s.max_steps || '?';
-    const objective = s.objective || '';
     const environment = s.environment || [];
     const difficulty = s.difficulty || 0;
-
-    // Tags
-    let tags = '';
-    if (domain) tags += '<span class="tag tag-domain">' + escapeHtml(domain) + '</span>';
-    environment.forEach(env => {
-        tags += '<span class="tag tag-env">' + escapeHtml(env) + '</span>';
-    });
-    modalities.forEach(m => {
-        tags += '<span class="tag">' + escapeHtml(m) + '</span>';
-    });
-    tags += '<span class="tag">max ' + maxSteps + ' steps</span>';
-    if (objective) tags += '<span class="tag">' + escapeHtml(objective) + '</span>';
 
     // Difficulty stars
     let starsHtml = '';
@@ -215,11 +212,31 @@ function renderScenarioCard(s) {
         starsHtml += '</span>';
     }
 
+    // Specs table
+    const specsRows = [
+        { label: 'Domain', value: domain },
+        { label: 'ROI', value: roi },
+        { label: 'Environment', value: environment.join(', ') },
+        { label: 'Modalities', value: modalities.join(', ') },
+        { label: 'Max steps', value: String(maxSteps) },
+    ].filter(r => r.value);
+
+    let specsHtml = '<table class="scenario-specs">';
+    specsRows.forEach(r => {
+        specsHtml += '<tr><td class="spec-label">' + escapeHtml(r.label) + '</td><td class="spec-value">' + escapeHtml(r.value) + '</td></tr>';
+    });
+    specsHtml += '</table>';
+
+    const overviewUrl = API_BASE + '/scenarios/' + encodeURIComponent(id) + '/overview';
+
     return `
         <div class="scenario-card">
             <h3>${escapeHtml(name)} ${starsHtml}</h3>
+            <div class="scenario-overview">
+                <img src="${overviewUrl}" alt="${escapeAttr(name)}" loading="lazy" onerror="this.parentElement.style.display='none'">
+            </div>
             <p class="scenario-desc">${escapeHtml(desc)}</p>
-            <div class="scenario-meta">${tags}</div>
+            ${specsHtml}
             <div class="mini-leaderboard" id="mini-lb-${escapeAttr(id)}">
                 <h4>Top Runs</h4>
                 <div class="mini-leaderboard-empty">Loading...</div>
@@ -255,8 +272,8 @@ async function loadMiniLeaderboard(scenarioId) {
             const score = r.score != null ? r.score.toFixed(0) : '-';
             html += `
                 <div class="mini-lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
-                    <span class="mini-lb-rank">${i + 1}.</span>
-                    <span class="mini-lb-name">${escapeHtml(name)}</span>
+                    <span class="mini-lb-rank">${rankBadge(i)}</span>
+                    <span class="mini-lb-name"><a href="#agent/${encodeURIComponent(name)}" class="agent-link" onclick="event.stopPropagation()">${escapeHtml(name)}</a></span>
                     <span class="mini-lb-score">${escapeHtml(score)}</span>
                     <span class="mini-lb-result ${resultCls}">${resultTxt}</span>
                 </div>
@@ -272,7 +289,34 @@ async function loadMiniLeaderboard(scenarioId) {
 // Play Session Management
 // ===================================================================
 
+let _pendingPlayScenarioId = null;
+
 async function startPlay(scenarioId) {
+    // Show pre-play modal to ask for player name
+    _pendingPlayScenarioId = scenarioId;
+    const nameInput = document.getElementById('preplay-player-name');
+    nameInput.value = localStorage.getItem('flairsim-player-name') || '';
+    document.getElementById('preplay-modal').hidden = false;
+    nameInput.focus();
+}
+
+function cancelPreplay() {
+    document.getElementById('preplay-modal').hidden = true;
+    _pendingPlayScenarioId = null;
+}
+
+async function confirmStartPlay() {
+    const nameInput = document.getElementById('preplay-player-name');
+    const playerName = nameInput.value.trim();
+    if (playerName) {
+        localStorage.setItem('flairsim-player-name', playerName);
+    }
+    document.getElementById('preplay-modal').hidden = true;
+
+    const scenarioId = _pendingPlayScenarioId;
+    _pendingPlayScenarioId = null;
+    if (!scenarioId) return;
+
     try {
         _startingSession = true;
         _spectatorMode = false;
@@ -295,8 +339,8 @@ async function startPlay(scenarioId) {
         document.getElementById('controls-info').style.display = '';
         document.getElementById('play-spectator-badge').hidden = true;
 
-        // Create session
-        session = await createSession(scenarioId, 'human');
+        // Create session with player name
+        session = await createSession(scenarioId, 'human', playerName || null);
         _startingSession = false;
         setPlayStatus(session.status);
 
@@ -514,9 +558,13 @@ async function loadGlobalLeaderboard() {
         `;
         entries.forEach((e, i) => {
             const score = e.total_score != null ? e.total_score.toFixed(1) : '-';
+            const agentName = e.agent_name || '-';
+            const agentLink = agentName !== '-'
+                ? '<a href="#agent/' + encodeURIComponent(agentName) + '" class="agent-link" onclick="event.stopPropagation()">' + escapeHtml(agentName) + '</a>'
+                : escapeHtml(agentName);
             html += `<tr>
-                <td>${i + 1}</td>
-                <td>${escapeHtml(e.agent_name || '-')}</td>
+                <td>${rankBadge(i)}</td>
+                <td>${agentLink}</td>
                 <td>${escapeHtml(score)}</td>
                 <td>${e.scenarios_attempted || 0}</td>
             </tr>`;
@@ -528,10 +576,18 @@ async function loadGlobalLeaderboard() {
     }
 }
 
+let _lbCurrentMode = 'ai'; // default to AI Agents tab
+
+function switchLbMode(mode) {
+    _lbCurrentMode = mode;
+    document.getElementById('lb-mode-ai').classList.toggle('active', mode === 'ai');
+    document.getElementById('lb-mode-human').classList.toggle('active', mode === 'human');
+    loadLeaderboard();
+}
+
 async function loadLeaderboard() {
     const container = document.getElementById('leaderboard-table-container');
     const scenarioSelect = document.getElementById('lb-filter-scenario');
-    const modeSelect = document.getElementById('lb-filter-mode');
 
     // Populate scenario filter options
     if (scenarios.length === 0) {
@@ -547,27 +603,21 @@ async function loadLeaderboard() {
             opt.textContent = name;
             scenarioSelect.appendChild(opt);
         });
-        // Attach filter change handlers
+        // Attach filter change handler
         scenarioSelect.onchange = loadLeaderboard;
-        modeSelect.onchange = loadLeaderboard;
     }
 
     const scenarioId = scenarioSelect.value || null;
-    const mode = modeSelect.value || null;
+    const mode = _lbCurrentMode;
 
     try {
         let runs = [];
-        let usedScoredEndpoint = false;
 
         if (scenarioId) {
-            // Use the scored per-scenario endpoint when a scenario is selected
-            const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + '?limit=100');
+            // Use the scored per-scenario endpoint with server-side mode filter
+            const qs = '?limit=100&mode=' + encodeURIComponent(mode);
+            const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + qs);
             runs = data.runs || [];
-            usedScoredEndpoint = true;
-            // Apply mode filter client-side since scored endpoint doesn't support it
-            if (mode) {
-                runs = runs.filter(r => r.mode === mode);
-            }
         } else {
             const data = await fetchLeaderboard(scenarioId, mode, 100);
             runs = data.runs || [];
@@ -599,6 +649,7 @@ async function loadLeaderboard() {
 
         runs.forEach((r, i) => {
             const name = r.player_name || r.model_name || 'Anon';
+            const nameLink = '<a href="#agent/' + encodeURIComponent(name) + '" class="agent-link" onclick="event.stopPropagation()">' + escapeHtml(name) + '</a>';
             const resultCls = r.success ? 'result-success' : 'result-fail';
             const resultTxt = r.success ? 'SUCCESS' : 'FAIL';
             const steps = r.steps_taken != null ? r.steps_taken : '-';
@@ -614,8 +665,8 @@ async function loadLeaderboard() {
 
             html += `
                 <tr class="lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
-                    <td>${i + 1}</td>
-                    <td>${escapeHtml(name)}</td>
+                    <td>${rankBadge(i)}</td>
+                    <td>${nameLink}</td>
                     <td>${escapeHtml(scenarioName)}</td>
                     <td>${modeLabel}</td>
                     <td><span class="${resultCls}">${resultTxt}</span></td>
@@ -1390,7 +1441,7 @@ function showResultsModal(obs, traj, durationSec) {
         rmRenderer.render(last.x, last.y);
     }
 
-    // Pre-fill player name from session
+    // Pre-fill player name from session or localStorage
     const nameInput = document.getElementById('result-player-name');
     if (session) {
         if (session.mode === 'ai' && session._modelInfo) {
@@ -1398,7 +1449,7 @@ function showResultsModal(obs, traj, durationSec) {
         } else if (session.player_name) {
             nameInput.value = session.player_name;
         } else {
-            nameInput.value = '';
+            nameInput.value = localStorage.getItem('flairsim-player-name') || '';
         }
     }
 
@@ -1570,6 +1621,12 @@ async function showRunDetail(runId) {
             }
         } catch (_) {
             // Score display is optional
+        }
+
+        // Score breakdown
+        const breakdownContainer = document.getElementById('detail-score-breakdown');
+        if (breakdownContainer) {
+            loadScoreBreakdown(runId, breakdownContainer);
         }
 
         // Overview image + trajectory SVG overlay
@@ -1772,6 +1829,227 @@ function formatDuration(seconds) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+/**
+ * Return a medal emoji for rank 0-2, or the 1-indexed number otherwise.
+ */
+function rankBadge(index) {
+    if (index === 0) return '\uD83E\uDD47'; // 🥇
+    if (index === 1) return '\uD83E\uDD48'; // 🥈
+    if (index === 2) return '\uD83E\uDD49'; // 🥉
+    return String(index + 1);
+}
+
+// ===================================================================
+// Agent Page (#agent/{name})
+// ===================================================================
+
+async function loadAgentPage(agentName) {
+    const container = document.getElementById('agent-page-content');
+    container.innerHTML = '<div class="loading-msg">Loading agent data...</div>';
+
+    try {
+        // Load scenarios if needed
+        if (scenarios.length === 0) {
+            try { scenarios = await fetchScenarios(); } catch (_) {}
+        }
+
+        // Fetch global leaderboard to find this agent
+        const globalData = await apiFetch('/leaderboard/global?limit=200');
+        const entries = globalData.leaderboard || [];
+        const agentEntry = entries.find(e => e.agent_name === agentName);
+
+        // Also fetch all runs for this agent across scenarios
+        const allRunsData = await apiFetch('/leaderboard?limit=500');
+        const allRuns = (allRunsData.runs || []).filter(r => {
+            const name = r.player_name || r.model_name || 'unknown';
+            return name === agentName;
+        });
+
+        // Agent rank in global LB
+        const globalRank = entries.findIndex(e => e.agent_name === agentName);
+
+        let html = '<div class="agent-header">';
+        html += '<h2>' + escapeHtml(agentName) + '</h2>';
+        if (globalRank >= 0) {
+            html += '<span class="agent-rank">' + rankBadge(globalRank) + ' Global Rank</span>';
+        }
+        html += '</div>';
+
+        // Stats summary
+        const totalScore = agentEntry ? agentEntry.total_score : 0;
+        const scenariosAttempted = agentEntry ? agentEntry.scenarios_attempted : 0;
+        const totalRuns = allRuns.length;
+        const successRuns = allRuns.filter(r => r.success).length;
+        const successRate = totalRuns > 0 ? Math.round(100 * successRuns / totalRuns) : 0;
+
+        html += '<div class="agent-stats">';
+        html += '<div class="stat"><span class="stat-value">' + totalScore.toFixed(1) + '</span><span class="stat-label">Total Score</span></div>';
+        html += '<div class="stat"><span class="stat-value">' + scenariosAttempted + '</span><span class="stat-label">Scenarios</span></div>';
+        html += '<div class="stat"><span class="stat-value">' + totalRuns + '</span><span class="stat-label">Runs</span></div>';
+        html += '<div class="stat"><span class="stat-value">' + successRate + '%</span><span class="stat-label">Success Rate</span></div>';
+        html += '</div>';
+
+        // Runs table
+        if (allRuns.length > 0) {
+            html += '<h3 style="margin:20px 0 12px">Runs</h3>';
+            html += '<div class="leaderboard-table-container"><table class="leaderboard-table"><thead><tr>';
+            html += '<th>#</th><th>Scenario</th><th>Result</th><th>Score</th><th>Steps</th><th>Distance</th><th>Date</th>';
+            html += '</tr></thead><tbody>';
+
+            // Score runs per scenario
+            for (let i = 0; i < allRuns.length; i++) {
+                const r = allRuns[i];
+                const scenarioData = scenarios.find(s => (s.scenario_id || s.id) === r.scenario_id);
+                const scenarioName = scenarioData ? (scenarioData.name || r.scenario_id) : r.scenario_id;
+                const resultCls = r.success ? 'result-success' : 'result-fail';
+                const resultTxt = r.success ? 'SUCCESS' : 'FAIL';
+                const steps = r.steps_taken != null ? r.steps_taken : '-';
+                const dist = r.distance_travelled != null ? Math.round(r.distance_travelled) + 'm' : '-';
+                const date = r.created_at ? new Date(r.created_at).toLocaleDateString() : '-';
+                const score = r.score_final != null ? r.score_final.toFixed(1) : '-';
+
+                html += '<tr class="lb-row" onclick="showRunDetail(\'' + escapeAttr(r.id) + '\')" style="cursor:pointer">';
+                html += '<td>' + rankBadge(i) + '</td>';
+                html += '<td><a href="#leaderboard" onclick="event.stopPropagation();showScenarioLeaderboard(\'' + escapeAttr(r.scenario_id) + '\')">' + escapeHtml(scenarioName) + '</a></td>';
+                html += '<td><span class="' + resultCls + '">' + resultTxt + '</span></td>';
+                html += '<td>' + escapeHtml(score) + '</td>';
+                html += '<td>' + steps + '</td>';
+                html += '<td>' + dist + '</td>';
+                html += '<td>' + date + '</td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+        } else {
+            html += '<div class="empty-msg" style="margin-top:20px">No runs found for this agent.</div>';
+        }
+
+        container.innerHTML = html;
+    } catch (err) {
+        container.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
+    }
+}
+
+// ===================================================================
+// About Page
+// ===================================================================
+
+async function loadAboutPage() {
+    const container = document.getElementById('about-page-content');
+
+    // Load scenarios for the table
+    if (scenarios.length === 0) {
+        try { scenarios = await fetchScenarios(); } catch (_) {}
+    }
+
+    let html = '';
+    html += '<h2>About FlairSim</h2>';
+    html += '<p class="about-intro">FlairSim is a drone navigation benchmark built on top of <a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB</a> aerial imagery. ';
+    html += 'Agents (human or AI) navigate a simulated drone to locate targets in real French aerial photographs.</p>';
+
+    html += '<h3>How It Works</h3>';
+    html += '<ol class="about-list">';
+    html += '<li>Choose a scenario from the landing page</li>';
+    html += '<li>Navigate the drone using keyboard controls or click-to-move</li>';
+    html += '<li>Find the target and press <kbd>Space</kbd> to declare FOUND, or <kbd>Esc</kbd> to stop</li>';
+    html += '<li>Your run is scored and ranked on the leaderboard</li>';
+    html += '</ol>';
+
+    html += '<h3>Scoring Methodology</h3>';
+    html += '<div class="about-scoring">';
+    html += '<h4>Successful Runs (S &isin; [0, 100])</h4>';
+    html += '<pre class="formula">S = [0.3&middot;(D_min/D_agent) + 0.3&middot;(Step_min/Step_agent) + 0.3&middot;(t_min/t_agent) + 0.1&middot;c] &times; 100</pre>';
+    html += '<p>Where D_min, Step_min, t_min are the per-scenario best values across all successful runs, and c is the agent\'s confidence (0-1).</p>';
+
+    html += '<h4>Failed Runs (F &isin; [-100, 0])</h4>';
+    html += '<pre class="formula">F = -100 &times; [0.5&middot;(1 - E) + 0.5&middot;c]</pre>';
+    html += '<p>Where E = FOV coverage (exploration ratio) and c = confidence. If the target was seen during the run, the penalty is multiplied by 1.5 (clamped to -100).</p>';
+    html += '</div>';
+
+    // Scenarios table
+    if (scenarios.length > 0) {
+        html += '<h3>Available Scenarios</h3>';
+        html += '<div class="leaderboard-table-container"><table class="leaderboard-table"><thead><tr>';
+        html += '<th>Name</th><th>Domain</th><th>ROI</th><th>Environment</th><th>Difficulty</th><th>Max Steps</th>';
+        html += '</tr></thead><tbody>';
+        scenarios.forEach(s => {
+            const id = s.scenario_id || s.id;
+            const name = s.name || id;
+            const domain = s.dataset ? (s.dataset.domain || '-') : '-';
+            const roi = s.dataset ? (s.dataset.roi || '-') : '-';
+            const env = s.environment ? s.environment.join(', ') : '-';
+            const diff = s.difficulty || 0;
+            let stars = '';
+            for (let i = 1; i <= 3; i++) stars += i <= diff ? '\u2605' : '\u2606';
+            const maxSteps = s.max_steps || '-';
+            html += '<tr style="cursor:pointer" onclick="navigateTo(\'landing\')">';
+            html += '<td>' + escapeHtml(name) + '</td>';
+            html += '<td>' + escapeHtml(domain) + '</td>';
+            html += '<td>' + escapeHtml(roi) + '</td>';
+            html += '<td>' + escapeHtml(env) + '</td>';
+            html += '<td>' + stars + '</td>';
+            html += '<td>' + escapeHtml(String(maxSteps)) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+    }
+
+    html += '<h3>Links</h3>';
+    html += '<ul class="about-list">';
+    html += '<li><a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB Dataset</a></li>';
+    html += '<li><a href="https://github.com" target="_blank" style="color:var(--accent)">GitHub Repository</a></li>';
+    html += '</ul>';
+
+    container.innerHTML = html;
+}
+
+// ===================================================================
+// Score Breakdown (for run-detail)
+// ===================================================================
+
+async function loadScoreBreakdown(runId, container) {
+    try {
+        const breakdown = await apiFetch('/leaderboard/' + runId + '/breakdown');
+        let html = '<div class="score-breakdown">';
+        html += '<h4>Score Breakdown</h4>';
+
+        const totalClass = breakdown.total >= 0 ? 'result-success' : 'result-fail';
+        html += '<div class="breakdown-total"><span class="' + totalClass + '" style="font-size:1.2rem;font-weight:700">' + breakdown.total.toFixed(1) + '</span></div>';
+
+        html += '<div class="breakdown-components">';
+        breakdown.components.forEach(c => {
+            const label = c.name.charAt(0).toUpperCase() + c.name.slice(1);
+            const ratio = c.ratio != null ? '(' + c.ratio.toFixed(2) + ')' : '';
+            const value = c.value != null ? '(' + c.value.toFixed(2) + ')' : '';
+            const detail = ratio || value;
+            const contrib = c.contribution >= 0 ? '+' + c.contribution.toFixed(1) : c.contribution.toFixed(1);
+            html += '<div class="breakdown-row">';
+            html += '<span class="breakdown-label">' + escapeHtml(label) + ' <span style="color:var(--text-muted)">' + detail + '</span></span>';
+            html += '<span class="breakdown-weight">&times;' + c.weight + '</span>';
+            html += '<span class="breakdown-contrib">' + contrib + '</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        if (breakdown.target_seen) {
+            html += '<div class="breakdown-note" style="color:var(--fail);font-size:0.75rem;margin-top:4px">Target seen: penalty &times;' + (breakdown.target_seen_multiplier || 1.5) + '</div>';
+        }
+
+        if (breakdown.reference_mins) {
+            const mins = breakdown.reference_mins;
+            html += '<div class="breakdown-refs" style="font-size:0.7rem;color:var(--text-muted);margin-top:8px">';
+            html += 'Ref: dist=' + (mins.distance != null ? Math.round(mins.distance) + 'm' : '-');
+            html += ' steps=' + (mins.steps != null ? mins.steps : '-');
+            html += ' time=' + (mins.time != null ? mins.time.toFixed(1) + 's' : '-');
+            html += '</div>';
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (_) {
+        container.innerHTML = '';
+    }
 }
 
 // ===================================================================

@@ -825,3 +825,205 @@ class TestScenarioLeaderboardRoute:
             assert len(runs) == 2
             # First run should have higher score
             assert runs[0]["score"] >= runs[1]["score"]
+
+
+# ---------------------------------------------------------------------------
+# Breakdown endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBreakdownRoute:
+    """Tests for GET /api/leaderboard/{run_id}/breakdown."""
+
+    @pytest.mark.asyncio
+    async def test_breakdown_endpoint_success(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Submit a successful run
+            submit_resp = await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 10,
+                    "distance_travelled": 150.0,
+                    "duration_s": 8.0,
+                    "player_name": "breakdown-agent",
+                    "confidence": 0.9,
+                },
+            )
+            assert submit_resp.status_code == 200
+            run_id = submit_resp.json()["run_id"]
+
+            resp = await client.get(f"/api/leaderboard/{run_id}/breakdown")
+            assert resp.status_code == 200
+            bd = resp.json()
+            assert bd["success"] is True
+            assert isinstance(bd["total"], float)
+            assert bd["total"] > 0
+            assert len(bd["components"]) == 4
+            assert "reference_mins" in bd
+
+    @pytest.mark.asyncio
+    async def test_breakdown_endpoint_not_found(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/leaderboard/nonexistent-uuid/breakdown")
+            assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_breakdown_endpoint_failure_run(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            submit_resp = await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "human",
+                    "success": False,
+                    "steps_taken": 50,
+                    "distance_travelled": 800.0,
+                    "duration_s": 30.0,
+                    "player_name": "fail-player",
+                    "confidence": 0.6,
+                    "fov_coverage": 0.3,
+                    "target_seen": True,
+                },
+            )
+            assert submit_resp.status_code == 200
+            run_id = submit_resp.json()["run_id"]
+
+            resp = await client.get(f"/api/leaderboard/{run_id}/breakdown")
+            assert resp.status_code == 200
+            bd = resp.json()
+            assert bd["success"] is False
+            assert bd["total"] <= 0
+            assert bd["target_seen"] is True
+            assert len(bd["components"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Scenario leaderboard mode filter
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioLeaderboardModeFilter:
+    """Tests for ?mode= parameter on scenario leaderboard."""
+
+    @pytest.mark.asyncio
+    async def test_mode_filter_ai_only(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Submit AI run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 10,
+                    "distance_travelled": 100.0,
+                    "player_name": "ai-agent",
+                },
+            )
+            # Submit human run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "human",
+                    "success": True,
+                    "steps_taken": 20,
+                    "distance_travelled": 200.0,
+                    "player_name": "human-player",
+                },
+            )
+
+            # Filter AI only
+            resp = await client.get(
+                "/api/leaderboard/scenario/find_target_test?mode=ai"
+            )
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            assert len(runs) == 1
+            assert runs[0]["mode"] == "ai"
+
+    @pytest.mark.asyncio
+    async def test_mode_filter_human_only(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Submit AI run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 10,
+                    "distance_travelled": 100.0,
+                    "player_name": "ai-agent2",
+                },
+            )
+            # Submit human run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "human",
+                    "success": True,
+                    "steps_taken": 20,
+                    "distance_travelled": 200.0,
+                    "player_name": "human-player2",
+                },
+            )
+
+            # Filter human only
+            resp = await client.get(
+                "/api/leaderboard/scenario/find_target_test?mode=human"
+            )
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            assert len(runs) == 1
+            assert runs[0]["mode"] == "human"
+
+    @pytest.mark.asyncio
+    async def test_mode_filter_none_returns_all(self, tmp_path):
+        app = _create_app(tmp_path)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Submit AI run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "ai",
+                    "success": True,
+                    "steps_taken": 10,
+                    "distance_travelled": 100.0,
+                    "player_name": "ai-agent3",
+                },
+            )
+            # Submit human run
+            await client.post(
+                "/api/leaderboard",
+                json={
+                    "scenario_id": "find_target_test",
+                    "mode": "human",
+                    "success": True,
+                    "steps_taken": 20,
+                    "distance_travelled": 200.0,
+                    "player_name": "human-player3",
+                },
+            )
+
+            # No mode filter — returns all
+            resp = await client.get("/api/leaderboard/scenario/find_target_test")
+            assert resp.status_code == 200
+            runs = resp.json()["runs"]
+            assert len(runs) == 2
