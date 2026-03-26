@@ -558,11 +558,20 @@ def create_web_app(
     # ---------------------------------------------------------------
 
     @app.get("/api/leaderboard/global")
-    async def get_global_leaderboard(limit: int = 50) -> Dict[str, Any]:
-        """Global cross-scenario agent ranking."""
+    async def get_global_leaderboard(
+        limit: int = 50, mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Global cross-scenario agent ranking.
+
+        Optional ``mode`` query parameter (``ai`` or ``human``) filters
+        runs before aggregation.
+        """
         scenario_ids = session_mgr.scenario_loader.list_ids()
-        entries = leaderboard.get_global_leaderboard(scenario_ids, limit=limit)
-        return {"leaderboard": entries}
+        entries = leaderboard.get_global_leaderboard(
+            scenario_ids, limit=limit, mode=mode
+        )
+        # Return scenario IDs so frontend can build per-scenario columns.
+        return {"leaderboard": entries, "scenario_ids": scenario_ids}
 
     @app.get("/api/leaderboard/scenario/{scenario_id}")
     async def get_scenario_leaderboard(
@@ -664,6 +673,97 @@ def create_web_app(
             content=jpeg_bytes,
             media_type="image/jpeg",
             headers=headers,
+        )
+
+    @app.get("/api/scenarios/{scenario_id}/thumbnail")
+    async def get_scenario_thumbnail(scenario_id: str, size: int = 400):
+        """Return a square thumbnail centered on the scenario start position.
+
+        Crops the overview image around the start coordinates so the card
+        preview shows the actual starting view rather than the full ROI.
+        """
+        from PIL import Image as PILImage
+        import io
+
+        jpeg_path = overview_dir / f"{scenario_id}.jpg"
+        bounds_path = overview_dir / f"{scenario_id}.json"
+
+        if not jpeg_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Thumbnail not available for scenario '{scenario_id}'",
+            )
+
+        # Load overview image and bounds.
+        img = PILImage.open(str(jpeg_path))
+        img_w, img_h = img.size
+
+        # Read bounds metadata.
+        x_min = y_min = 0.0
+        x_max = float(img_w)
+        y_max = float(img_h)
+        if bounds_path.exists():
+            try:
+                bd = json.loads(bounds_path.read_text())
+                x_min = float(bd.get("x_min", 0))
+                y_min = float(bd.get("y_min", 0))
+                x_max = float(bd.get("x_max", img_w))
+                y_max = float(bd.get("y_max", img_h))
+            except (json.JSONDecodeError, KeyError, ValueError):
+                pass
+
+        # Get scenario start position.
+        try:
+            scenario = session_mgr.scenario_loader.get(scenario_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Scenario not found")
+
+        start_x = scenario.start.x
+        start_y = scenario.start.y
+
+        # Convert world coords to pixel coords.
+        world_w = x_max - x_min if x_max != x_min else 1.0
+        world_h = y_max - y_min if y_max != y_min else 1.0
+        px = (start_x - x_min) / world_w * img_w
+        py = (1.0 - (start_y - y_min) / world_h) * img_h  # flip Y
+
+        # Crop a square region centered on start position.
+        # Use ~25% of the image dimension as crop radius for a nice zoom.
+        crop_radius = int(min(img_w, img_h) * 0.25)
+        cx, cy = int(px), int(py)
+
+        left = max(0, cx - crop_radius)
+        top = max(0, cy - crop_radius)
+        right = min(img_w, cx + crop_radius)
+        bottom = min(img_h, cy + crop_radius)
+
+        # Ensure square crop.
+        side = min(right - left, bottom - top)
+        if right - left > side:
+            left = cx - side // 2
+            right = left + side
+        if bottom - top > side:
+            top = cy - side // 2
+            bottom = top + side
+
+        # Clamp.
+        left = max(0, left)
+        top = max(0, top)
+        right = min(img_w, left + side)
+        bottom = min(img_h, top + side)
+
+        cropped = img.crop((left, top, right, bottom))
+        # Resize to requested size.
+        size = min(size, 800)
+        cropped = cropped.resize((size, size), PILImage.LANCZOS)
+
+        buf = io.BytesIO()
+        cropped.save(buf, format="JPEG", quality=85)
+        buf.seek(0)
+
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/jpeg",
         )
 
     return app

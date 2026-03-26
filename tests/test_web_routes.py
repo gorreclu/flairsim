@@ -691,7 +691,8 @@ class TestGlobalLeaderboardRoute:
             resp = await client.get("/api/leaderboard/global")
             assert resp.status_code == 200
             data = resp.json()
-            assert data == {"leaderboard": []}
+            assert data["leaderboard"] == []
+            assert "scenario_ids" in data
 
     @pytest.mark.asyncio
     async def test_global_leaderboard_with_run(self, tmp_path):
