@@ -675,11 +675,24 @@ function _renderResultsTable(container, agents, columns, scope) {
         return sortAsc ? va - vb : vb - va;
     });
 
-    // Find best values per column
+    // Find best values per column (only successful agents for metric columns when possible)
     const bestVals = {};
+    const _metricKeys = new Set([
+        'steps_taken', 'duration_s', 'distance_travelled',
+        'steps_taken_score', 'duration_s_score', 'distance_travelled_score',
+        'avg_steps_taken', 'avg_duration_s', 'avg_distance_travelled',
+        'avg_steps_taken_score', 'avg_duration_s_score', 'avg_distance_travelled_score',
+    ]);
     columns.forEach(col => {
         if (!col.best) return;
-        const vals = agents.map(a => a[col.key]).filter(v => v != null && v !== false);
+        let pool = agents;
+        if (_metricKeys.has(col.key)) {
+            // Filter to successful agents only when at least one exists
+            const successPool = agents.filter(a =>
+                a.success === true || (a.success_rate != null && a.success_rate > 0));
+            if (successPool.length > 0) pool = successPool;
+        }
+        const vals = pool.map(a => a[col.key]).filter(v => v != null && v !== false);
         if (vals.length === 0) return;
         bestVals[col.key] = col.best === 'max' ? Math.max(...vals) : Math.min(...vals);
     });
@@ -2197,7 +2210,7 @@ function _renderAgentScenario(scenarioId) {
     // Compute normalized scores across sorted runs
     _addNormalizedScores(sorted, ['steps_taken', 'duration_s', 'distance_travelled']);
 
-    // Best values (for raw columns)
+    // Best values (only successful runs for metric columns when possible)
     const bestVals = {};
     const metricCols = [
         { key: 'steps_taken', best: 'min' }, { key: 'duration_s', best: 'min' },
@@ -2205,8 +2218,10 @@ function _renderAgentScenario(scenarioId) {
         { key: 'steps_taken_score', best: 'max' }, { key: 'duration_s_score', best: 'max' },
         { key: 'distance_travelled_score', best: 'max' },
     ];
+    const successRuns = runs.filter(r => r.success === true);
     metricCols.forEach(col => {
-        const vals = runs.map(r => r[col.key]).filter(v => v != null);
+        const pool = successRuns.length > 0 ? successRuns : runs;
+        const vals = pool.map(r => r[col.key]).filter(v => v != null);
         if (vals.length) bestVals[col.key] = col.best === 'max' ? Math.max(...vals) : Math.min(...vals);
     });
 
