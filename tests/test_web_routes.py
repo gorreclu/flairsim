@@ -680,23 +680,23 @@ class TestAgentRoutes:
 
 
 class TestGlobalLeaderboardRoute:
-    """Test GET /api/leaderboard/global."""
+    """Test GET /api/leaderboard/global (flat metrics, Pareto-based)."""
 
     @pytest.mark.asyncio
     async def test_global_leaderboard_empty(self, tmp_path):
-        """GET /api/leaderboard/global with no runs -> 200 with empty list."""
+        """GET /api/leaderboard/global with no runs -> 200 with empty agents."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/api/leaderboard/global")
             assert resp.status_code == 200
             data = resp.json()
-            assert data["leaderboard"] == []
+            assert data["agents"] == []
             assert "scenario_ids" in data
 
     @pytest.mark.asyncio
     async def test_global_leaderboard_with_run(self, tmp_path):
-        """Submit a successful run; global leaderboard returns 1 entry."""
+        """Submit a successful run; global results returns 1 agent."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -714,17 +714,16 @@ class TestGlobalLeaderboardRoute:
             resp = await client.get("/api/leaderboard/global")
             assert resp.status_code == 200
             data = resp.json()
-            entries = data["leaderboard"]
-            assert len(entries) == 1
-            entry = entries[0]
-            assert entry["agent_name"] == "agent-x"
-            assert "total_score" in entry
-            assert "scenarios_attempted" in entry
-            assert "runs" in entry
+            agents = data["agents"]
+            assert len(agents) == 1
+            agent = agents[0]
+            assert agent["agent_name"] == "agent-x"
+            assert "success_rate" in agent
+            assert "scenarios_completed" in agent
 
     @pytest.mark.asyncio
     async def test_global_leaderboard_limit(self, tmp_path):
-        """limit=1 query param is respected."""
+        """Global results does not support limit (all qualifying agents returned)."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -740,10 +739,11 @@ class TestGlobalLeaderboardRoute:
                         "player_name": name,
                     },
                 )
-            resp = await client.get("/api/leaderboard/global?limit=1")
+            resp = await client.get("/api/leaderboard/global")
             assert resp.status_code == 200
             data = resp.json()
-            assert len(data["leaderboard"]) == 1
+            # All 3 agents completed the single scenario
+            assert len(data["agents"]) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -752,11 +752,11 @@ class TestGlobalLeaderboardRoute:
 
 
 class TestScenarioLeaderboardRoute:
-    """Test GET /api/leaderboard/scenario/{scenario_id}."""
+    """Test GET /api/leaderboard/scenario/{scenario_id} (flat metrics, Pareto)."""
 
     @pytest.mark.asyncio
     async def test_scenario_leaderboard_empty(self, tmp_path):
-        """GET /api/leaderboard/scenario/find_target_test with no runs -> empty runs."""
+        """GET /api/leaderboard/scenario/find_target_test with no runs -> empty agents."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -764,11 +764,11 @@ class TestScenarioLeaderboardRoute:
             assert resp.status_code == 200
             data = resp.json()
             assert data["scenario_id"] == "find_target_test"
-            assert data["runs"] == []
+            assert data["agents"] == []
 
     @pytest.mark.asyncio
     async def test_scenario_leaderboard_with_run(self, tmp_path):
-        """Submit a run; scenario leaderboard returns it with a score key."""
+        """Submit a run; scenario results returns agent with flat metrics."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -787,16 +787,19 @@ class TestScenarioLeaderboardRoute:
             assert resp.status_code == 200
             data = resp.json()
             assert data["scenario_id"] == "find_target_test"
-            assert len(data["runs"]) == 1
-            assert "score" in data["runs"][0]
+            assert len(data["agents"]) == 1
+            agent = data["agents"][0]
+            assert agent["agent_name"] == "agent-run"
+            assert agent["success"] is True
+            assert "steps_taken" in agent
 
     @pytest.mark.asyncio
-    async def test_scenario_leaderboard_sorted_by_score(self, tmp_path):
-        """Two runs with different scores -> sorted DESC by score."""
+    async def test_scenario_leaderboard_sorted(self, tmp_path):
+        """Two agents: successful first, then by steps ascending."""
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Run 1: success, fewer steps (better score)
+            # Run 1: success, fewer steps (better)
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -808,7 +811,7 @@ class TestScenarioLeaderboardRoute:
                     "player_name": "fast-agent",
                 },
             )
-            # Run 2: failure (lower / negative score)
+            # Run 2: failure
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -822,89 +825,10 @@ class TestScenarioLeaderboardRoute:
             )
             resp = await client.get("/api/leaderboard/scenario/find_target_test")
             assert resp.status_code == 200
-            runs = resp.json()["runs"]
-            assert len(runs) == 2
-            # First run should have higher score
-            assert runs[0]["score"] >= runs[1]["score"]
-
-
-# ---------------------------------------------------------------------------
-# Breakdown endpoint
-# ---------------------------------------------------------------------------
-
-
-class TestBreakdownRoute:
-    """Tests for GET /api/leaderboard/{run_id}/breakdown."""
-
-    @pytest.mark.asyncio
-    async def test_breakdown_endpoint_success(self, tmp_path):
-        app = _create_app(tmp_path)
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Submit a successful run
-            submit_resp = await client.post(
-                "/api/leaderboard",
-                json={
-                    "scenario_id": "find_target_test",
-                    "mode": "ai",
-                    "success": True,
-                    "steps_taken": 10,
-                    "distance_travelled": 150.0,
-                    "duration_s": 8.0,
-                    "player_name": "breakdown-agent",
-                    "confidence": 0.9,
-                },
-            )
-            assert submit_resp.status_code == 200
-            run_id = submit_resp.json()["run_id"]
-
-            resp = await client.get(f"/api/leaderboard/{run_id}/breakdown")
-            assert resp.status_code == 200
-            bd = resp.json()
-            assert bd["success"] is True
-            assert isinstance(bd["total"], float)
-            assert bd["total"] > 0
-            assert len(bd["components"]) == 4
-            assert "reference_mins" in bd
-
-    @pytest.mark.asyncio
-    async def test_breakdown_endpoint_not_found(self, tmp_path):
-        app = _create_app(tmp_path)
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/api/leaderboard/nonexistent-uuid/breakdown")
-            assert resp.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_breakdown_endpoint_failure_run(self, tmp_path):
-        app = _create_app(tmp_path)
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            submit_resp = await client.post(
-                "/api/leaderboard",
-                json={
-                    "scenario_id": "find_target_test",
-                    "mode": "human",
-                    "success": False,
-                    "steps_taken": 50,
-                    "distance_travelled": 800.0,
-                    "duration_s": 30.0,
-                    "player_name": "fail-player",
-                    "confidence": 0.6,
-                    "fov_coverage": 0.3,
-                    "target_seen": True,
-                },
-            )
-            assert submit_resp.status_code == 200
-            run_id = submit_resp.json()["run_id"]
-
-            resp = await client.get(f"/api/leaderboard/{run_id}/breakdown")
-            assert resp.status_code == 200
-            bd = resp.json()
-            assert bd["success"] is False
-            assert bd["total"] <= 0
-            assert bd["target_seen"] is True
-            assert len(bd["components"]) == 2
+            agents = resp.json()["agents"]
+            assert len(agents) == 2
+            # Successful agent should be first
+            assert agents[0]["success"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -913,14 +837,13 @@ class TestBreakdownRoute:
 
 
 class TestScenarioLeaderboardModeFilter:
-    """Tests for ?mode= parameter on scenario leaderboard."""
+    """Tests for ?mode= parameter on scenario results."""
 
     @pytest.mark.asyncio
     async def test_mode_filter_ai_only(self, tmp_path):
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Submit AI run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -932,7 +855,6 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "ai-agent",
                 },
             )
-            # Submit human run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -944,22 +866,19 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "human-player",
                 },
             )
-
-            # Filter AI only
             resp = await client.get(
                 "/api/leaderboard/scenario/find_target_test?mode=ai"
             )
             assert resp.status_code == 200
-            runs = resp.json()["runs"]
-            assert len(runs) == 1
-            assert runs[0]["mode"] == "ai"
+            agents = resp.json()["agents"]
+            assert len(agents) == 1
+            assert agents[0]["agent_name"] == "ai-agent"
 
     @pytest.mark.asyncio
     async def test_mode_filter_human_only(self, tmp_path):
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Submit AI run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -971,7 +890,6 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "ai-agent2",
                 },
             )
-            # Submit human run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -983,22 +901,19 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "human-player2",
                 },
             )
-
-            # Filter human only
             resp = await client.get(
                 "/api/leaderboard/scenario/find_target_test?mode=human"
             )
             assert resp.status_code == 200
-            runs = resp.json()["runs"]
-            assert len(runs) == 1
-            assert runs[0]["mode"] == "human"
+            agents = resp.json()["agents"]
+            assert len(agents) == 1
+            assert agents[0]["agent_name"] == "human-player2"
 
     @pytest.mark.asyncio
     async def test_mode_filter_none_returns_all(self, tmp_path):
         app = _create_app(tmp_path)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # Submit AI run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -1010,7 +925,6 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "ai-agent3",
                 },
             )
-            # Submit human run
             await client.post(
                 "/api/leaderboard",
                 json={
@@ -1022,9 +936,7 @@ class TestScenarioLeaderboardModeFilter:
                     "player_name": "human-player3",
                 },
             )
-
-            # No mode filter — returns all
             resp = await client.get("/api/leaderboard/scenario/find_target_test")
             assert resp.status_code == 200
-            runs = resp.json()["runs"]
-            assert len(runs) == 2
+            agents = resp.json()["agents"]
+            assert len(agents) == 2

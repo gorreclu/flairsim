@@ -25,9 +25,8 @@ docs/
 # macOS
 .DS_Store
 
-# FLAIR-HUB data (GeoTIFFs, large binary files)
-data/D*
-data/*.db
+# FLAIR-HUB data (GeoTIFFs, large binary files, simulation results)
+data/
 
 # Generated overview images
 flairsim/web/static/overviews/

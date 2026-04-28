@@ -51,6 +51,10 @@ function navigateTo(view, params) {
         target.style.animation = 'none';
         target.offsetHeight; // reflow
         target.style.animation = '';
+    } else {
+        // Unknown view — fall back to landing
+        navigateTo('landing');
+        return;
     }
     currentView = view;
 
@@ -58,13 +62,17 @@ function navigateTo(view, params) {
         loadScenarios();
     } else if (view === 'processes') {
         loadProcesses();
-    } else if (view === 'leaderboard') {
-        loadGlobalLeaderboard();
+    } else if (view === 'results') {
+        loadResultsPage();
     } else if (view === 'about') {
         loadAboutPage();
     }
 
-    window.location.hash = view;
+    // Preserve full hash for deep-linked views (set by handleRoute)
+    const currentHash = window.location.hash.replace('#', '');
+    if (!currentHash.startsWith(view + '/') && currentHash !== view) {
+        window.location.hash = view;
+    }
 }
 
 function handleRoute() {
@@ -83,6 +91,20 @@ function handleRoute() {
         const agentName = decodeURIComponent(hash.substring(6));
         navigateTo('agent');
         loadAgentPage(agentName);
+        return;
+    }
+    // Handle results/scenario_id
+    if (hash.startsWith('results/')) {
+        const scenarioId = decodeURIComponent(hash.substring(8));
+        navigateTo('results');
+        setTimeout(() => {
+            switchResultsTab('scenario');
+            const select = document.getElementById('res-filter-scenario');
+            if (select) {
+                select.value = scenarioId;
+                loadScenarioResults(scenarioId);
+            }
+        }, 50);
         return;
     }
     navigateTo(hash);
@@ -148,13 +170,6 @@ async function submitToLeaderboard(runData) {
     });
 }
 
-async function fetchLeaderboard(scenarioId, mode, limit) {
-    let qs = '?limit=' + (limit || 50);
-    if (scenarioId) qs += '&scenario_id=' + encodeURIComponent(scenarioId);
-    if (mode) qs += '&mode=' + encodeURIComponent(mode);
-    return apiFetch('/leaderboard' + qs);
-}
-
 async function fetchLeaderboardRun(runId) {
     return apiFetch('/leaderboard/' + runId);
 }
@@ -176,12 +191,6 @@ async function loadScenarios() {
             return;
         }
         grid.innerHTML = scenarios.map(s => renderScenarioCard(s)).join('');
-
-        // Load mini-leaderboards in parallel (fire-and-forget per card)
-        scenarios.forEach(s => {
-            const id = s.scenario_id || s.id;
-            loadMiniLeaderboard(id);
-        });
     } catch (err) {
         grid.innerHTML = '<div class="empty-msg">Error loading scenarios: ' + escapeHtml(err.message) + '</div>';
     }
@@ -243,52 +252,16 @@ function renderScenarioCard(s) {
             </div>
             <p class="scenario-desc">${escapeHtml(desc)}</p>
             ${specsHtml}
-            <div class="mini-leaderboard" id="mini-lb-${escapeAttr(id)}">
-                <h4>Top Runs</h4>
-                <div class="mini-leaderboard-empty">Loading...</div>
-            </div>
             <div class="scenario-actions">
                 <button class="btn btn-primary" onclick="startPlay('${escapeAttr(id)}')">
                     Play
                 </button>
-                <button class="btn btn-ghost" onclick="showScenarioLeaderboard('${escapeAttr(id)}')">
-                    Leaderboard
+                <button class="btn btn-ghost" onclick="navigateTo('results');setTimeout(()=>{switchResultsTab('scenario');document.getElementById('res-filter-scenario').value='${escapeAttr(id)}';loadScenarioResults('${escapeAttr(id)}')},50)">
+                    View Results
                 </button>
             </div>
         </div>
     `;
-}
-
-async function loadMiniLeaderboard(scenarioId) {
-    const container = document.getElementById('mini-lb-' + scenarioId);
-    if (!container) return;
-
-    try {
-        const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + '?limit=5');
-        const runs = data.runs || [];
-        if (runs.length === 0) {
-            container.innerHTML = '<h4>Top Runs</h4><div class="mini-leaderboard-empty">No runs yet</div>';
-            return;
-        }
-        let html = '<h4>Top Runs</h4>';
-        runs.forEach((r, i) => {
-            const name = r.player_name || r.model_name || 'Anon';
-            const resultCls = r.success ? 'result-success' : 'result-fail';
-            const resultTxt = r.success ? 'OK' : 'FAIL';
-            const score = r.score != null ? r.score.toFixed(0) : '-';
-            html += `
-                <div class="mini-lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
-                    <span class="mini-lb-rank">${rankBadge(i)}</span>
-                    <span class="mini-lb-name"><a href="#agent/${encodeURIComponent(name)}" class="agent-link" onclick="event.stopPropagation()">${escapeHtml(name)}</a></span>
-                    <span class="mini-lb-score">${escapeHtml(score)}</span>
-                    <span class="mini-lb-result ${resultCls}">${resultTxt}</span>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-    } catch (_) {
-        container.innerHTML = '<h4>Top Runs</h4><div class="mini-leaderboard-empty">--</div>';
-    }
 }
 
 // ===================================================================
@@ -364,18 +337,6 @@ async function confirmStartPlay() {
     }
 }
 
-function showScenarioLeaderboard(scenarioId) {
-    navigateTo('leaderboard');
-    // Switch to scenario tab and set the filter to this scenario
-    setTimeout(() => {
-        switchLbTab('scenario');
-        const select = document.getElementById('lb-filter-scenario');
-        if (select) {
-            select.value = scenarioId;
-            loadLeaderboard();
-        }
-    }, 50);
-}
 
 async function exitSession() {
     // Clear minimap canvas to remove stale pixels
@@ -529,201 +490,420 @@ async function destroyProcessSession(sessionId) {
 // Full Leaderboard View
 // ===================================================================
 
-function switchLbTab(tab) {
+// ===================================================================
+// Results Page
+// ===================================================================
+
+let _resultsScenarioData = null; // cached scenario results for radar selection
+
+function switchResultsTab(tab) {
     const tabs = ['global', 'scenario'];
     tabs.forEach(t => {
-        document.getElementById('lb-tab-' + t).classList.toggle('active', t === tab);
-        document.getElementById('lb-panel-' + t).hidden = t !== tab;
+        document.getElementById('res-tab-' + t).classList.toggle('active', t === tab);
+        document.getElementById('res-panel-' + t).hidden = t !== tab;
     });
     if (tab === 'global') {
-        loadGlobalLeaderboard();
+        loadGlobalResults();
     } else {
-        loadLeaderboard();
+        initScenarioResultsFilter();
     }
 }
 
-let _lbGlobalMode = 'ai'; // default AI for global ranking
-
-function switchGlobalLbMode(mode) {
-    _lbGlobalMode = mode;
-    document.getElementById('lb-global-mode-ai').classList.toggle('active', mode === 'ai');
-    document.getElementById('lb-global-mode-human').classList.toggle('active', mode === 'human');
-    loadGlobalLeaderboard();
-}
-
-async function loadGlobalLeaderboard() {
-    const container = document.getElementById('lb-global-container');
-    container.innerHTML = '<div class="loading-msg">Loading...</div>';
-    try {
-        const mode = _lbGlobalMode;
-        const data = await apiFetch('/leaderboard/global?limit=100&mode=' + encodeURIComponent(mode));
-        const entries = data.leaderboard || [];
-        const scenarioIds = data.scenario_ids || [];
-
-        // Load scenario names for column headers.
-        if (scenarios.length === 0) {
-            try { scenarios = await fetchScenarios(); } catch (_) {}
-        }
-        const scenarioNames = {};
-        scenarios.forEach(s => {
-            const sid = s.scenario_id || s.id;
-            scenarioNames[sid] = s.name || sid;
-        });
-
-        if (entries.length === 0) {
-            container.innerHTML = '<div class="empty-msg">No runs yet.</div>';
-            return;
-        }
-
-        // Build header with per-scenario columns.
-        let html = '<table class="leaderboard-table"><thead><tr>';
-        html += '<th>#</th><th>Agent</th><th>Total Score</th>';
-        scenarioIds.forEach(sid => {
-            const shortName = scenarioNames[sid] || sid;
-            html += '<th title="' + escapeAttr(sid) + '">' + escapeHtml(shortName) + '</th>';
-        });
-        html += '</tr></thead><tbody>';
-
-        entries.forEach((e, i) => {
-            const score = e.total_score != null ? e.total_score.toFixed(1) : '-';
-            const agentName = e.agent_name || '-';
-            const agentLink = agentName !== '-'
-                ? '<a href="#agent/' + encodeURIComponent(agentName) + '" class="agent-link" onclick="event.stopPropagation()">' + escapeHtml(agentName) + '</a>'
-                : escapeHtml(agentName);
-            const scenarioScores = e.scenario_scores || {};
-
-            html += '<tr>';
-            html += '<td>' + rankBadge(i) + '</td>';
-            html += '<td>' + agentLink + '</td>';
-            html += '<td><strong>' + escapeHtml(score) + '</strong></td>';
-            scenarioIds.forEach(sid => {
-                const ss = scenarioScores[sid];
-                if (ss != null) {
-                    const cls = ss >= 0 ? 'result-success' : 'result-fail';
-                    html += '<td><span class="' + cls + '">' + ss.toFixed(1) + '</span></td>';
-                } else {
-                    html += '<td style="color:var(--text-muted)">-</td>';
-                }
-            });
-            html += '</tr>';
-        });
-
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    } catch (err) {
-        container.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
-    }
-}
-
-let _lbCurrentMode = 'ai'; // default to AI Agents tab
-
-function switchLbMode(mode) {
-    _lbCurrentMode = mode;
-    document.getElementById('lb-mode-ai').classList.toggle('active', mode === 'ai');
-    document.getElementById('lb-mode-human').classList.toggle('active', mode === 'human');
-    loadLeaderboard();
-}
-
-async function loadLeaderboard() {
-    const container = document.getElementById('leaderboard-table-container');
-    const scenarioSelect = document.getElementById('lb-filter-scenario');
-
-    // Populate scenario filter options
+async function loadResultsPage() {
+    // Populate scenario filter
     if (scenarios.length === 0) {
         try { scenarios = await fetchScenarios(); } catch (_) {}
     }
-    // Only repopulate if empty (except the default option)
-    if (scenarioSelect.options.length <= 1) {
+    loadGlobalResults();
+}
+
+async function initScenarioResultsFilter() {
+    if (scenarios.length === 0) {
+        try { scenarios = await fetchScenarios(); } catch (_) {}
+    }
+    const select = document.getElementById('res-filter-scenario');
+    if (select.options.length === 0) {
         scenarios.forEach(s => {
             const id = s.scenario_id || s.id;
             const name = s.name || id;
             const opt = document.createElement('option');
             opt.value = id;
             opt.textContent = name;
-            scenarioSelect.appendChild(opt);
+            select.appendChild(opt);
         });
-        // Attach filter change handler
-        scenarioSelect.onchange = loadLeaderboard;
+        select.onchange = () => loadScenarioResults(select.value);
     }
+    if (select.value) {
+        loadScenarioResults(select.value);
+    }
+}
 
-    const scenarioId = scenarioSelect.value || null;
-    const mode = _lbCurrentMode;
+async function loadGlobalResults() {
+    const tableContainer = document.getElementById('global-results-table');
+    const parallelContainer = document.getElementById('global-parallel-plot');
+    const radarContainer = document.getElementById('global-radar-chart');
+    tableContainer.innerHTML = '<div class="loading-msg">Loading...</div>';
+    parallelContainer.innerHTML = '';
+    radarContainer.innerHTML = '';
 
     try {
-        let runs = [];
+        const data = await apiFetch('/leaderboard/global');
+        const agents = data.agents || [];
 
-        if (scenarioId) {
-            // Use the scored per-scenario endpoint with server-side mode filter
-            const qs = '?limit=100&mode=' + encodeURIComponent(mode);
-            const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + qs);
-            runs = data.runs || [];
-        } else {
-            const data = await fetchLeaderboard(scenarioId, mode, 100);
-            runs = data.runs || [];
-        }
-
-        if (runs.length === 0) {
-            container.innerHTML = '<div class="empty-msg">No runs found.</div>';
+        if (agents.length === 0) {
+            tableContainer.innerHTML = '<div class="empty-msg">No agents have completed all scenarios yet.</div>';
             return;
         }
 
-        let html = `
-            <table class="leaderboard-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Player</th>
-                        <th>Scenario</th>
-                        <th>Mode</th>
-                        <th>Result</th>
-                        <th>Score</th>
-                        <th>Steps</th>
-                        <th>Distance</th>
-                        <th>Duration</th>
-                        <th>Date</th>
-                    </tr>
-                </thead>
-                <tbody>
-        `;
+        // Store for reuse
+        _resultsGlobalData = agents;
 
-        runs.forEach((r, i) => {
-            const name = r.player_name || r.model_name || 'Anon';
-            const nameLink = '<a href="#agent/' + encodeURIComponent(name) + '" class="agent-link" onclick="event.stopPropagation()">' + escapeHtml(name) + '</a>';
-            const resultCls = r.success ? 'result-success' : 'result-fail';
-            const resultTxt = r.success ? 'SUCCESS' : 'FAIL';
-            const steps = r.steps_taken != null ? r.steps_taken : '-';
-            const dist = r.distance_travelled != null ? Math.round(r.distance_travelled) + 'm' : '-';
-            const dur = r.duration_s != null ? formatDuration(r.duration_s) : '-';
-            const date = r.created_at ? new Date(r.created_at).toLocaleDateString() : '-';
-            const scenarioName = (() => {
-                const sc = scenarios.find(s => (s.scenario_id || s.id) === r.scenario_id);
-                return sc ? (sc.name || r.scenario_id) : r.scenario_id;
-            })();
-            const modeLabel = r.mode === 'ai' ? 'AI' : 'Human';
-            const score = r.score != null ? r.score.toFixed(1) : '-';
+        // Compute normalized scores across all agents
+        _addNormalizedScores(agents, ['avg_steps_taken', 'avg_duration_s', 'avg_distance_travelled']);
 
-            html += `
-                <tr class="lb-row" onclick="showRunDetail('${escapeAttr(r.id)}')" style="cursor:pointer" title="View run detail">
-                    <td>${rankBadge(i)}</td>
-                    <td>${nameLink}</td>
-                    <td>${escapeHtml(scenarioName)}</td>
-                    <td>${modeLabel}</td>
-                    <td><span class="${resultCls}">${resultTxt}</span></td>
-                    <td>${escapeHtml(score)}</td>
-                    <td>${steps}</td>
-                    <td>${dist}</td>
-                    <td>${dur}</td>
-                    <td>${date}</td>
-                </tr>
-            `;
-        });
+        // Build sortable table with checkboxes
+        const columns = [
+            { key: 'pareto_rank',  label: 'Rank',          sortable: true,  format: v => v },
+            { key: 'agent_name',   label: 'Agent',         sortable: true,  format: null },
+            { key: 'success_rate', label: 'Success Rate',   sortable: true,  format: v => (v * 100).toFixed(0) + '%', best: 'max' },
+            { key: 'avg_steps_taken',      label: 'Avg Steps',  sortable: true,  format: v => v != null ? Math.round(v) : '-', best: 'min' },
+            { key: 'avg_steps_taken_score', label: 'Steps Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: 'avg_duration_s',       label: 'Avg Time (s)', sortable: true, format: v => v != null ? v.toFixed(1) : '-', best: 'min' },
+            { key: 'avg_duration_s_score', label: 'Time Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: 'avg_distance_travelled', label: 'Avg Dist (m)', sortable: true, format: v => v != null ? Math.round(v) : '-', best: 'min' },
+            { key: 'avg_distance_travelled_score', label: 'Dist Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: '_check',       label: 'Plot',           sortable: false, format: null },
+        ];
 
-        html += '</tbody></table>';
-        container.innerHTML = html;
+        _renderResultsTable(tableContainer, agents, columns, 'global');
+
+        // Plots (top 5 selected by default)
+        _updateResultsPlots('global');
 
     } catch (err) {
-        container.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
+        tableContainer.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
     }
+}
+
+async function loadScenarioResults(scenarioId) {
+    if (!scenarioId) return;
+    const tableContainer = document.getElementById('scenario-results-table');
+    const parallelContainer = document.getElementById('scenario-parallel-plot');
+    const radarContainer = document.getElementById('scenario-radar-chart');
+    const selectorContainer = document.getElementById('radar-agent-selector');
+    tableContainer.innerHTML = '<div class="loading-msg">Loading...</div>';
+    parallelContainer.innerHTML = '';
+    radarContainer.innerHTML = '';
+    if (selectorContainer) selectorContainer.innerHTML = '';
+
+    try {
+        const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId));
+        const agents = data.agents || [];
+        _resultsScenarioData = agents;
+
+        if (agents.length === 0) {
+            tableContainer.innerHTML = '<div class="empty-msg">No runs for this scenario yet.</div>';
+            return;
+        }
+
+        // Compute normalized scores across all agents
+        _addNormalizedScores(agents, ['steps_taken', 'duration_s', 'distance_travelled']);
+
+        const columns = [
+            { key: 'pareto_rank',  label: 'Rank',          sortable: true,  format: v => v },
+            { key: 'agent_name',   label: 'Agent',         sortable: true,  format: null },
+            { key: 'success',      label: 'Result',        sortable: true,  format: null },
+            { key: 'steps_taken',  label: 'Steps',         sortable: true,  format: v => v != null ? v : '-', best: 'min' },
+            { key: 'steps_taken_score', label: 'Steps Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: 'duration_s',   label: 'Time (s)',      sortable: true,  format: v => v != null ? v.toFixed(1) : '-', best: 'min' },
+            { key: 'duration_s_score', label: 'Time Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: 'distance_travelled', label: 'Distance (m)', sortable: true, format: v => v != null ? Math.round(v) : '-', best: 'min' },
+            { key: 'distance_travelled_score', label: 'Dist Score', sortable: true, format: v => v != null ? v.toFixed(2) : '-', best: 'max' },
+            { key: 'target_seen',  label: 'Target Seen',   sortable: true,  format: v => v ? 'Yes' : 'No', best: 'max' },
+            { key: '_check',       label: 'Plot',          sortable: false },
+        ];
+
+        _renderResultsTable(tableContainer, agents, columns, 'scenario');
+        _updateResultsPlots('scenario');
+
+    } catch (err) {
+        tableContainer.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
+    }
+}
+
+// ===================================================================
+// Sortable Results Table with Checkboxes
+// ===================================================================
+
+const AGENT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16', '#06b6d4', '#e11d48'];
+
+let _resultsGlobalData = [];
+// Sort state per scope: null = default (pareto_rank asc), else {key, asc}
+let _globalSort = null;
+let _scenarioSort = null;
+
+function _renderResultsTable(container, agents, columns, scope) {
+    const sortState = scope === 'global' ? _globalSort : _scenarioSort;
+    const sortKey = sortState ? sortState.key : 'pareto_rank';
+    const sortAsc = sortState ? sortState.asc : true;
+
+    // Sort agents
+    const sorted = [...agents].sort((a, b) => {
+        let va = a[sortKey], vb = b[sortKey];
+        if (va == null) va = sortAsc ? Infinity : -Infinity;
+        if (vb == null) vb = sortAsc ? Infinity : -Infinity;
+        if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+        return sortAsc ? va - vb : vb - va;
+    });
+
+    // Find best values per column
+    const bestVals = {};
+    columns.forEach(col => {
+        if (!col.best) return;
+        const vals = agents.map(a => a[col.key]).filter(v => v != null && v !== false);
+        if (vals.length === 0) return;
+        bestVals[col.key] = col.best === 'max' ? Math.max(...vals) : Math.min(...vals);
+    });
+
+    // Determine which agents are checked (preserve previous selection or default top 5)
+    const prevChecked = _getCheckedAgents(scope);
+    const checkedSet = prevChecked.length > 0
+        ? new Set(prevChecked)
+        : new Set(agents.slice(0, 5).map(a => a.agent_name));
+
+    let html = '<table class="leaderboard-table sortable-table"><thead><tr>';
+    columns.forEach(col => {
+        if (col.key === '_check') {
+            html += '<th class="col-check">Plot</th>';
+        } else if (col.sortable) {
+            let arrow = '';
+            if (sortState && sortState.key === col.key) {
+                arrow = sortState.asc ? ' ▲' : ' ▼';
+            }
+            html += '<th class="sortable-th" data-sort-key="' + col.key + '" data-scope="' + scope + '">' + col.label + arrow + '</th>';
+        } else {
+            html += '<th>' + col.label + '</th>';
+        }
+    });
+    html += '</tr></thead><tbody>';
+
+    sorted.forEach((a) => {
+        const colorIdx = agents.indexOf(a);
+        const color = AGENT_COLORS[colorIdx % AGENT_COLORS.length];
+        const checked = checkedSet.has(a.agent_name) ? 'checked' : '';
+
+        html += '<tr>';
+        columns.forEach(col => {
+            if (col.key === '_check') {
+                html += '<td class="col-check">'
+                    + '<input type="checkbox" class="agent-plot-check" data-scope="' + scope + '" data-agent="' + escapeAttr(a.agent_name) + '" ' + checked
+                    + ' onchange="_onAgentCheckChange(\'' + scope + '\')">'
+                    + '<span class="agent-color-dot" style="background:' + color + '"></span></td>';
+            } else if (col.key === 'agent_name') {
+                const link = '<a href="#agent/' + encodeURIComponent(a.agent_name) + '" class="agent-link">' + escapeHtml(a.agent_name) + '</a>';
+                html += '<td>' + link + '</td>';
+            } else if (col.key === 'success') {
+                const cls = a.success ? 'result-success' : 'result-fail';
+                const txt = a.success ? 'SUCCESS' : 'FAIL';
+                html += '<td><span class="' + cls + '">' + txt + '</span></td>';
+            } else {
+                const val = a[col.key];
+                const display = col.format ? col.format(val) : val;
+                const isBest = col.best && val != null && val === bestVals[col.key];
+                const cls = isBest ? ' class="best-val"' : '';
+                html += '<td' + cls + '>' + display + '</td>';
+            }
+        });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    // Attach 3-state sort handlers: asc → desc → default
+    container.querySelectorAll('.sortable-th').forEach(th => {
+        th.addEventListener('click', () => {
+            const key = th.dataset.sortKey;
+            const sc = th.dataset.scope;
+            const cur = sc === 'global' ? _globalSort : _scenarioSort;
+            let next;
+            if (!cur || cur.key !== key) {
+                next = { key, asc: true };
+            } else if (cur.asc) {
+                next = { key, asc: false };
+            } else {
+                next = null; // back to default
+            }
+            if (sc === 'global') { _globalSort = next; }
+            else { _scenarioSort = next; }
+            _renderResultsTable(container, sc === 'global' ? _resultsGlobalData : _resultsScenarioData, columns, sc);
+            _updateResultsPlots(sc);
+        });
+    });
+}
+
+function _getCheckedAgents(scope) {
+    const checks = document.querySelectorAll('.agent-plot-check[data-scope="' + scope + '"]:checked');
+    return Array.from(checks).map(cb => cb.dataset.agent);
+}
+
+function _onAgentCheckChange(scope) {
+    _updateResultsPlots(scope);
+}
+
+/**
+ * Compute min-max normalized scores for lower-is-better metrics.
+ * Score = 1 - (val - min) / (max - min).  Best agent gets 1.0, worst 0.0.
+ * Adds *_score properties to each object in-place.
+ */
+function _addNormalizedScores(items, metricKeys) {
+    if (!items || items.length === 0) return;
+    metricKeys.forEach(key => {
+        const scoreKey = key + '_score';
+        const vals = items.map(a => a[key]).filter(v => v != null);
+        if (vals.length === 0) { items.forEach(a => { a[scoreKey] = null; }); return; }
+        const mn = Math.min(...vals), mx = Math.max(...vals);
+        const span = mx - mn;
+        items.forEach(a => {
+            const v = a[key];
+            if (v == null) { a[scoreKey] = null; return; }
+            a[scoreKey] = span > 0 ? 1 - (v - mn) / span : 1.0;
+        });
+    });
+}
+
+function _updateResultsPlots(scope) {
+    const allData = scope === 'global' ? _resultsGlobalData : _resultsScenarioData;
+    const selected = _getCheckedAgents(scope);
+    const isGlobal = scope === 'global';
+
+    const parallelContainer = document.getElementById(scope + '-parallel-plot');
+    const radarContainer = document.getElementById(scope + '-radar-chart');
+
+    if (!selected || selected.length === 0) {
+        parallelContainer.innerHTML = '<div class="empty-msg">Select agents in the table to compare</div>';
+        radarContainer.innerHTML = '<div class="empty-msg">Select agents in the table to compare</div>';
+        return;
+    }
+
+    const filtered = allData.filter(a => selected.includes(a.agent_name));
+    const mapped = filtered.map(a => ({
+        agent_name: a.agent_name,
+        success_rate: isGlobal ? a.success_rate : (a.success ? 1 : 0),
+        steps_taken: isGlobal ? a.avg_steps_taken : a.steps_taken,
+        duration_s: isGlobal ? a.avg_duration_s : a.duration_s,
+        distance_travelled: isGlobal ? a.avg_distance_travelled : a.distance_travelled,
+        steps_score: isGlobal ? a.avg_steps_taken_score : a.steps_taken_score,
+        time_score: isGlobal ? a.avg_duration_s_score : a.duration_s_score,
+        dist_score: isGlobal ? a.avg_distance_travelled_score : a.distance_travelled_score,
+        _colorIdx: allData.indexOf(a),
+    }));
+
+    renderParallelPlot(parallelContainer, mapped);
+    renderRadarChart(radarContainer, mapped);
+}
+
+function updateScenarioRadar() {
+    _updateResultsPlots('scenario');
+}
+
+// ===================================================================
+// Plotly Visualisations
+// ===================================================================
+
+function renderParallelPlot(container, agents) {
+    if (!agents || agents.length === 0 || typeof Plotly === 'undefined') {
+        container.innerHTML = '';
+        return;
+    }
+    const plotWidth = container.clientWidth || 500;
+
+    const dims = ['steps_score', 'time_score', 'dist_score'];
+    const dimLabels = ['Steps Score', 'Time Score', 'Dist Score'];
+
+    // Values are already normalized [0, 1] — higher is better
+    const traces = agents.map((a, i) => {
+        const color = AGENT_COLORS[(a._colorIdx != null ? a._colorIdx : i) % AGENT_COLORS.length];
+        const vals = dims.map(d => a[d] || 0);
+        const hoverText = dims.map((d, di) => {
+            const v = a[d];
+            return dimLabels[di] + ': ' + (v != null ? v.toFixed(2) : '-');
+        }).join('<br>');
+        return {
+            type: 'scatter',
+            mode: 'lines+markers',
+            x: dimLabels,
+            y: vals,
+            name: a.agent_name,
+            line: { color: color, width: 2.5 },
+            marker: { color: color, size: 7 },
+            hovertemplate: hoverText + '<extra>' + a.agent_name + '</extra>',
+        };
+    });
+
+    const layout = {
+        title: { text: 'Parallel Coordinates', font: { color: '#e2e8f0', size: 14 }, x: 0.5, y: 0.98 },
+        margin: { l: 30, r: 30, t: 45, b: 70 },
+        font: { color: '#a0aec0', size: 11 },
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        width: plotWidth,
+        height: 420,
+        xaxis: { gridcolor: '#2d3748', linecolor: '#2d3748', fixedrange: true },
+        yaxis: { range: [-0.05, 1.05], showticklabels: true, gridcolor: '#2d3748', linecolor: '#2d3748', fixedrange: true, zeroline: false, tickformat: '.1f' },
+        legend: { font: { color: '#a0aec0', size: 10 }, orientation: 'h', y: -0.25, x: 0.5, xanchor: 'center' },
+        hovermode: 'closest',
+    };
+
+    Plotly.newPlot(container, traces, layout, { responsive: false, displayModeBar: false });
+}
+
+function renderRadarChart(container, agents) {
+    if (!agents || agents.length === 0 || typeof Plotly === 'undefined') {
+        container.innerHTML = '';
+        return;
+    }
+    const plotWidth = container.clientWidth || 500;
+
+    const categories = ['Steps Score', 'Time Score', 'Dist Score'];
+
+    const traces = agents.map((a, i) => {
+        const color = AGENT_COLORS[(a._colorIdx != null ? a._colorIdx : i) % AGENT_COLORS.length];
+        const r = [
+            a.steps_score || 0,
+            a.time_score || 0,
+            a.dist_score || 0,
+        ];
+        return {
+            type: 'scatterpolar',
+            r: [...r, r[0]],
+            theta: [...categories, categories[0]],
+            fill: 'toself',
+            fillcolor: color + '20',
+            line: { color: color, width: 2 },
+            name: a.agent_name,
+            opacity: 0.8,
+        };
+    });
+
+    const layout = {
+        title: { text: 'Radar Comparison', font: { color: '#e2e8f0', size: 14 }, x: 0.5, y: 0.98 },
+        polar: {
+            radialaxis: { visible: true, range: [0, 1], showticklabels: false, gridcolor: '#2d3748' },
+            angularaxis: { gridcolor: '#2d3748', linecolor: '#2d3748', rotation: 90 },
+            bgcolor: 'transparent',
+            domain: { x: [0.1, 0.9], y: [0.05, 0.85] },
+        },
+        showlegend: true,
+        legend: { font: { color: '#a0aec0', size: 10 }, orientation: 'h', y: -0.1, x: 0.5, xanchor: 'center' },
+        margin: { l: 40, r: 40, t: 45, b: 60 },
+        font: { color: '#a0aec0', size: 11 },
+        paper_bgcolor: 'transparent',
+        width: plotWidth,
+        height: 420,
+    };
+
+    Plotly.newPlot(container, traces, layout, { responsive: false, displayModeBar: false });
 }
 
 // ===================================================================
@@ -1528,9 +1708,9 @@ async function submitRun() {
         steps_detail: stepsDetail.length > 0 ? stepsDetail : null,
         model_info: session && session._modelInfo ? session._modelInfo : null,
         confidence: 1.0,                          // humans are always confident
-        fov_coverage: metrics.fov_coverage,
+        discovery_coverage: metrics.discovery_coverage,
         target_seen: result.target_in_view != null ? result.target_in_view : null,
-        metrics: { fov_coverage: metrics.fov_coverage, unique_cells: metrics.unique_cells_count },
+        metrics: { discovery_coverage: metrics.discovery_coverage, unique_cells: metrics.unique_cells },
     };
 
     try {
@@ -1544,52 +1724,44 @@ async function submitRun() {
 }
 
 /**
- * Compute run metrics from the trajectory array.
+ * Compute discovery coverage from the trajectory array.
  * Each trajectory point: {x, y, z, step, footprint}
  *
- * Returns: {fov_coverage, unique_cells_count}
- * - fov_coverage: fraction of unique 10m grid cells covered vs total cells in bounding box
- *   (0.0 if trajectory empty or bounding box has zero area)
- * - unique_cells_count: number of distinct 10m grid cells covered
+ * Returns: {discovery_coverage, unique_cells, total_observations}
+ * - discovery_coverage: unique cells / total cell observations (penalises revisits)
  */
 function computeRunMetrics(traj) {
     if (!traj || traj.length === 0) {
-        return { fov_coverage: 0.0, unique_cells_count: 0 };
+        return { discovery_coverage: 0.0, unique_cells: 0, total_observations: 0 };
     }
 
     const CELL_SIZE = 10;  // 10m grid cells
-    const coveredCells = new Set();
+    const seen = new Set();
+    let totalObs = 0;
 
     for (const p of traj) {
-        const halfWidth = (p.footprint || 0) / 2;
-        if (halfWidth <= 0) continue;
+        const half = (p.footprint || 0) / 2;
+        if (half <= 0) continue;
 
-        // Cells covered by this footprint square centered at (p.x, p.y)
-        const xMin = Math.floor((p.x - halfWidth) / CELL_SIZE);
-        const xMax = Math.floor((p.x + halfWidth) / CELL_SIZE);
-        const yMin = Math.floor((p.y - halfWidth) / CELL_SIZE);
-        const yMax = Math.floor((p.y + halfWidth) / CELL_SIZE);
+        const xMin = Math.floor((p.x - half) / CELL_SIZE);
+        const xMax = Math.floor((p.x + half) / CELL_SIZE);
+        const yMin = Math.floor((p.y - half) / CELL_SIZE);
+        const yMax = Math.floor((p.y + half) / CELL_SIZE);
 
         for (let cx = xMin; cx <= xMax; cx++) {
             for (let cy = yMin; cy <= yMax; cy++) {
-                coveredCells.add(cx + ',' + cy);
+                seen.add(cx + ',' + cy);
+                totalObs++;
             }
         }
     }
 
-    // Bounding box of the trajectory
-    const xs = traj.map(p => p.x);
-    const ys = traj.map(p => p.y);
-    const xSpan = Math.max(...xs) - Math.min(...xs);
-    const ySpan = Math.max(...ys) - Math.min(...ys);
-
-    const totalCellsX = Math.max(1, Math.ceil((xSpan + 2 * (traj[0].footprint || 0)) / CELL_SIZE));
-    const totalCellsY = Math.max(1, Math.ceil((ySpan + 2 * (traj[0].footprint || 0)) / CELL_SIZE));
-    const totalCells = totalCellsX * totalCellsY;
+    if (totalObs === 0) return { discovery_coverage: 0.0, unique_cells: 0, total_observations: 0 };
 
     return {
-        fov_coverage: Math.min(1.0, coveredCells.size / totalCells),
-        unique_cells_count: coveredCells.size,
+        discovery_coverage: seen.size / totalObs,
+        unique_cells: seen.size,
+        total_observations: totalObs,
     };
 }
 
@@ -1646,12 +1818,6 @@ async function showRunDetail(runId) {
         `;
         if (run.reason) {
             metaEl.innerHTML += `<span style="color:var(--text-secondary);font-style:italic">${escapeHtml(run.reason)}</span>`;
-        }
-
-        // Score breakdown
-        const breakdownContainer = document.getElementById('detail-score-breakdown');
-        if (breakdownContainer) {
-            loadScoreBreakdown(runId, breakdownContainer);
         }
 
         // Overview image + trajectory SVG overlay
@@ -1847,7 +2013,7 @@ function escapeHtml(str) {
 }
 
 function escapeAttr(str) {
-    return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function formatDuration(seconds) {
@@ -1870,90 +2036,314 @@ function rankBadge(index) {
 // Agent Page (#agent/{name})
 // ===================================================================
 
+let _agentPageData = {}; // { scenarioId: { runs, scenarioName } }
+let _agentCurrentScenario = null;
+let _agentSort = null; // 3-state sort like results
+
 async function loadAgentPage(agentName) {
     const container = document.getElementById('agent-page-content');
     container.innerHTML = '<div class="loading-msg">Loading agent data...</div>';
 
     try {
-        // Load scenarios if needed
         if (scenarios.length === 0) {
             try { scenarios = await fetchScenarios(); } catch (_) {}
         }
 
-        // Fetch global leaderboard to find this agent
-        const globalData = await apiFetch('/leaderboard/global?limit=200');
-        const entries = globalData.leaderboard || [];
-        const agentEntry = entries.find(e => e.agent_name === agentName);
+        const runsData = await apiFetch('/agents/' + encodeURIComponent(agentName) + '/runs');
+        const allRuns = runsData.runs || [];
 
-        // Also fetch all runs for this agent across scenarios
-        const allRunsData = await apiFetch('/leaderboard?limit=500');
-        const allRuns = (allRunsData.runs || []).filter(r => {
-            const name = r.player_name || r.model_name || 'unknown';
-            return name === agentName;
+        // Group runs by scenario
+        _agentPageData = {};
+        allRuns.forEach(r => {
+            const sid = r.scenario_id;
+            if (!_agentPageData[sid]) {
+                const sc = scenarios.find(s => (s.scenario_id || s.id) === sid);
+                _agentPageData[sid] = { runs: [], scenarioName: sc ? (sc.name || sid) : sid };
+            }
+            _agentPageData[sid].runs.push(r);
         });
 
-        // Agent rank in global LB
-        const globalRank = entries.findIndex(e => e.agent_name === agentName);
-
-        let html = '<div class="agent-header">';
-        html += '<h2>' + escapeHtml(agentName) + '</h2>';
-        if (globalRank >= 0) {
-            html += '<span class="agent-rank">' + rankBadge(globalRank) + ' Global Rank</span>';
+        // Rank runs within each scenario using rank-vector method
+        for (const [sid, data] of Object.entries(_agentPageData)) {
+            _rankAgentRuns(data.runs);
         }
-        html += '</div>';
 
-        // Stats summary
-        const totalScore = agentEntry ? agentEntry.total_score : 0;
-        const scenariosAttempted = agentEntry ? agentEntry.scenarios_attempted : 0;
+        // Header + stats
         const totalRuns = allRuns.length;
         const successRuns = allRuns.filter(r => r.success).length;
         const successRate = totalRuns > 0 ? Math.round(100 * successRuns / totalRuns) : 0;
+        const scenarioCount = Object.keys(_agentPageData).length;
 
+        let html = '<div class="agent-header"><h2>' + escapeHtml(agentName) + '</h2></div>';
         html += '<div class="agent-stats">';
-        html += '<div class="stat"><span class="stat-value">' + totalScore.toFixed(1) + '</span><span class="stat-label">Total Score</span></div>';
-        html += '<div class="stat"><span class="stat-value">' + scenariosAttempted + '</span><span class="stat-label">Scenarios</span></div>';
-        html += '<div class="stat"><span class="stat-value">' + totalRuns + '</span><span class="stat-label">Runs</span></div>';
+        html += '<div class="stat"><span class="stat-value">' + scenarioCount + '</span><span class="stat-label">Scenarios</span></div>';
+        html += '<div class="stat"><span class="stat-value">' + totalRuns + '</span><span class="stat-label">Total Runs</span></div>';
         html += '<div class="stat"><span class="stat-value">' + successRate + '%</span><span class="stat-label">Success Rate</span></div>';
         html += '</div>';
 
-        // Runs table
-        if (allRuns.length > 0) {
-            html += '<h3 style="margin:20px 0 12px">Runs</h3>';
-            html += '<div class="leaderboard-table-container"><table class="leaderboard-table"><thead><tr>';
-            html += '<th>#</th><th>Scenario</th><th>Result</th><th>Score</th><th>Steps</th><th>Distance</th><th>Date</th>';
-            html += '</tr></thead><tbody>';
+        // Scenario selector dropdown
+        const sids = Object.keys(_agentPageData);
+        html += '<div class="leaderboard-filters"><label>Scenario <select id="agent-scenario-select">';
+        sids.forEach(sid => {
+            html += '<option value="' + escapeAttr(sid) + '">' + escapeHtml(_agentPageData[sid].scenarioName) + ' (' + _agentPageData[sid].runs.length + ' runs)</option>';
+        });
+        html += '</select></label></div>';
 
-            // Score runs per scenario
-            for (let i = 0; i < allRuns.length; i++) {
-                const r = allRuns[i];
-                const scenarioData = scenarios.find(s => (s.scenario_id || s.id) === r.scenario_id);
-                const scenarioName = scenarioData ? (scenarioData.name || r.scenario_id) : r.scenario_id;
-                const resultCls = r.success ? 'result-success' : 'result-fail';
-                const resultTxt = r.success ? 'SUCCESS' : 'FAIL';
-                const steps = r.steps_taken != null ? r.steps_taken : '-';
-                const dist = r.distance_travelled != null ? Math.round(r.distance_travelled) + 'm' : '-';
-                const date = r.created_at ? new Date(r.created_at).toLocaleDateString() : '-';
-                const score = r.score_final != null ? r.score_final.toFixed(1) : '-';
-
-                html += '<tr class="lb-row" onclick="showRunDetail(\'' + escapeAttr(r.id) + '\')" style="cursor:pointer">';
-                html += '<td>' + rankBadge(i) + '</td>';
-                html += '<td><a href="#leaderboard" onclick="event.stopPropagation();showScenarioLeaderboard(\'' + escapeAttr(r.scenario_id) + '\')">' + escapeHtml(scenarioName) + '</a></td>';
-                html += '<td><span class="' + resultCls + '">' + resultTxt + '</span></td>';
-                html += '<td>' + escapeHtml(score) + '</td>';
-                html += '<td>' + steps + '</td>';
-                html += '<td>' + dist + '</td>';
-                html += '<td>' + date + '</td>';
-                html += '</tr>';
-            }
-            html += '</tbody></table></div>';
-        } else {
-            html += '<div class="empty-msg" style="margin-top:20px">No runs found for this agent.</div>';
-        }
+        // Content area for selected scenario
+        html += '<div id="agent-scenario-content"></div>';
 
         container.innerHTML = html;
+
+        // Wire up selector
+        const select = document.getElementById('agent-scenario-select');
+        select.onchange = () => { _agentSort = null; _renderAgentScenario(select.value); };
+        if (sids.length > 0) {
+            _agentCurrentScenario = sids[0];
+            _renderAgentScenario(sids[0]);
+        }
+
     } catch (err) {
         container.innerHTML = '<div class="empty-msg">Error: ' + escapeHtml(err.message) + '</div>';
     }
+}
+
+function _rankAgentRuns(runs) {
+    if (runs.length === 0) return;
+    const lowerBetter = ['steps_taken', 'duration_s', 'distance_travelled'];
+    const higherBetter = [];
+    const allMetrics = lowerBetter.concat(higherBetter);
+    const n = runs.length;
+
+    // Separate success/fail
+    const ok = runs.filter(r => r.success);
+    const fail = runs.filter(r => !r.success);
+
+    function assignRanks(group) {
+        if (group.length === 0) return;
+        const rankVecs = group.map(() => []);
+        for (const metric of allMetrics) {
+            const reverse = higherBetter.includes(metric);
+            const vals = group.map((r, i) => [r[metric] != null ? r[metric] : (reverse ? -Infinity : Infinity), i]);
+            vals.sort((a, b) => reverse ? b[0] - a[0] : a[0] - b[0]);
+            const ranks = new Array(group.length);
+            let curRank = 1;
+            for (let pos = 0; pos < vals.length; pos++) {
+                if (pos > 0 && vals[pos][0] !== vals[pos - 1][0]) curRank = pos + 1;
+                ranks[vals[pos][1]] = curRank;
+            }
+            for (let i = 0; i < group.length; i++) {
+                rankVecs[i].push(ranks[i]);
+            }
+        }
+        // Sort vectors and attach
+        group.forEach((r, i) => { r._rankVec = rankVecs[i].slice().sort((a, b) => a - b); });
+        group.sort((a, b) => {
+            for (let j = 0; j < a._rankVec.length; j++) {
+                if (a._rankVec[j] !== b._rankVec[j]) return a._rankVec[j] - b._rankVec[j];
+            }
+            return 0;
+        });
+    }
+
+    assignRanks(ok);
+    assignRanks(fail);
+
+    // Assign final run_rank
+    const merged = ok.concat(fail);
+    merged.forEach((r, i) => { r.run_rank = i + 1; delete r._rankVec; });
+
+    // Reorder original array in-place
+    runs.length = 0;
+    merged.forEach(r => runs.push(r));
+}
+
+function _renderAgentScenario(scenarioId) {
+    _agentCurrentScenario = scenarioId;
+    const data = _agentPageData[scenarioId];
+    if (!data) return;
+    const runs = data.runs;
+    const contentEl = document.getElementById('agent-scenario-content');
+
+    const sortState = _agentSort;
+    const sortKey = sortState ? sortState.key : 'run_rank';
+    const sortAsc = sortState ? sortState.asc : true;
+
+    const sorted = [...runs].sort((a, b) => {
+        let va = a[sortKey], vb = b[sortKey];
+        if (va == null) va = sortAsc ? Infinity : -Infinity;
+        if (vb == null) vb = sortAsc ? Infinity : -Infinity;
+        if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+        return sortAsc ? va - vb : vb - va;
+    });
+
+    // Compute normalized scores across sorted runs
+    _addNormalizedScores(sorted, ['steps_taken', 'duration_s', 'distance_travelled']);
+
+    // Best values (for raw columns)
+    const bestVals = {};
+    const metricCols = [
+        { key: 'steps_taken', best: 'min' }, { key: 'duration_s', best: 'min' },
+        { key: 'distance_travelled', best: 'min' },
+        { key: 'steps_taken_score', best: 'max' }, { key: 'duration_s_score', best: 'max' },
+        { key: 'distance_travelled_score', best: 'max' },
+    ];
+    metricCols.forEach(col => {
+        const vals = runs.map(r => r[col.key]).filter(v => v != null);
+        if (vals.length) bestVals[col.key] = col.best === 'max' ? Math.max(...vals) : Math.min(...vals);
+    });
+
+    // Checked runs (default top 5)
+    const prevChecked = _getCheckedAgents('agent');
+    const checkedSet = prevChecked.length > 0
+        ? new Set(prevChecked)
+        : new Set(sorted.slice(0, 5).map((r, i) => 'run_' + i));
+
+    const columns = ['run_rank', 'run_num', 'success', 'steps_taken', 'steps_taken_score', 'duration_s', 'duration_s_score', 'distance_travelled', 'distance_travelled_score', 'target_seen', 'created_at', '_check'];
+    const colLabels = { '_check': 'Plot', 'run_rank': 'Rank', 'run_num': 'Run #', 'success': 'Result', 'steps_taken': 'Steps', 'steps_taken_score': 'Steps Score', 'duration_s': 'Time (s)', 'duration_s_score': 'Time Score', 'distance_travelled': 'Distance (m)', 'distance_travelled_score': 'Dist Score', 'target_seen': 'Target Seen', 'created_at': 'Date' };
+    const sortable = new Set(['run_rank', 'steps_taken', 'steps_taken_score', 'duration_s', 'duration_s_score', 'distance_travelled', 'distance_travelled_score', 'target_seen', 'success']);
+    const bestMap = { 'steps_taken': 'min', 'duration_s': 'min', 'distance_travelled': 'min', 'steps_taken_score': 'max', 'duration_s_score': 'max', 'distance_travelled_score': 'max' };
+
+    let html = '<table class="leaderboard-table sortable-table"><thead><tr>';
+    columns.forEach(col => {
+        let arrow = '';
+        if (sortState && sortState.key === col) arrow = sortState.asc ? ' ▲' : ' ▼';
+        if (col === '_check') {
+            html += '<th class="col-check">Plot</th>';
+        } else if (sortable.has(col)) {
+            html += '<th class="sortable-th" data-sort-key="' + col + '" data-scope="agent">' + colLabels[col] + arrow + '</th>';
+        } else {
+            html += '<th>' + colLabels[col] + '</th>';
+        }
+    });
+    html += '</tr></thead><tbody>';
+
+    sorted.forEach((r, idx) => {
+        const runKey = 'run_' + idx;
+        const color = AGENT_COLORS[idx % AGENT_COLORS.length];
+        const checked = checkedSet.has(runKey) ? 'checked' : '';
+
+        html += '<tr>';
+        columns.forEach(col => {
+            if (col === '_check') {
+                html += '<td class="col-check"><input type="checkbox" class="agent-plot-check" data-scope="agent" data-agent="' + runKey + '" ' + checked + ' onchange="_updateAgentPlots()">'
+                    + '<span class="agent-color-dot" style="background:' + color + '"></span></td>';
+            } else if (col === 'run_num') {
+                html += '<td>' + (runs.indexOf(r) + 1) + '</td>';
+            } else if (col === 'success') {
+                const cls = r.success ? 'result-success' : 'result-fail';
+                html += '<td><span class="' + cls + '">' + (r.success ? 'SUCCESS' : 'FAIL') + '</span></td>';
+            } else if (col === 'created_at') {
+                html += '<td>' + (r.created_at ? new Date(r.created_at).toLocaleDateString() : '-') + '</td>';
+            } else if (col === 'target_seen') {
+                html += '<td>' + (r.target_seen ? 'Yes' : 'No') + '</td>';
+            } else if (col === 'duration_s') {
+                const v = r[col];
+                const isBest = bestVals[col] != null && v === bestVals[col];
+                html += '<td' + (isBest ? ' class="best-val"' : '') + '>' + (v != null ? v.toFixed(1) : '-') + '</td>';
+            } else if (col === 'distance_travelled') {
+                const v = r[col];
+                const isBest = bestVals[col] != null && v === bestVals[col];
+                html += '<td' + (isBest ? ' class="best-val"' : '') + '>' + (v != null ? Math.round(v) : '-') + '</td>';
+            } else if (col === 'steps_taken') {
+                const v = r[col];
+                const isBest = bestVals[col] != null && v === bestVals[col];
+                html += '<td' + (isBest ? ' class="best-val"' : '') + '>' + (v != null ? v : '-') + '</td>';
+            } else if (col.endsWith('_score')) {
+                const v = r[col];
+                const isBest = bestVals[col] != null && v === bestVals[col];
+                html += '<td' + (isBest ? ' class="best-val"' : '') + '>' + (v != null ? v.toFixed(2) : '-') + '</td>';
+            } else {
+                html += '<td>' + (r[col] != null ? r[col] : '-') + '</td>';
+            }
+        });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+
+    // Plots
+    html += '<div class="plots-row">';
+    html += '<div class="plot-container" id="agent-parallel-' + escapeAttr(scenarioId) + '"></div>';
+    html += '<div class="plot-container" id="agent-radar-' + escapeAttr(scenarioId) + '"></div>';
+    html += '</div>';
+
+    // Trajectory maps
+    html += '<h3 style="margin-top:24px">Trajectories</h3>';
+    html += '<div class="agent-trajectories">';
+    runs.forEach((r, i) => {
+        html += '<div class="agent-traj-container" id="agent-traj-' + escapeAttr(r.id) + '">';
+        html += '<div class="agent-traj-label">Run ' + (i + 1) + ' - ' + (r.success ? 'Success' : 'Fail') + '</div>';
+        html += '<div class="agent-traj-map"></div>';
+        html += '</div>';
+    });
+    html += '</div>';
+
+    contentEl.innerHTML = html;
+
+    // Sort handlers
+    contentEl.querySelectorAll('.sortable-th[data-scope="agent"]').forEach(th => {
+        th.addEventListener('click', () => {
+            const key = th.dataset.sortKey;
+            if (!_agentSort || _agentSort.key !== key) {
+                _agentSort = { key, asc: true };
+            } else if (_agentSort.asc) {
+                _agentSort = { key, asc: false };
+            } else {
+                _agentSort = null;
+            }
+            _renderAgentScenario(scenarioId);
+        });
+    });
+
+    // Render plots
+    _updateAgentPlots();
+
+    // Render trajectory maps
+    for (const r of runs) {
+        const trajContainer = document.getElementById('agent-traj-' + r.id);
+        if (trajContainer && r.trajectory && r.trajectory.length > 0) {
+            const mapDiv = trajContainer.querySelector('.agent-traj-map');
+            renderOverviewWithTrajectory(r, mapDiv);
+        }
+    }
+}
+
+function _updateAgentPlots() {
+    const sid = _agentCurrentScenario;
+    if (!sid || !_agentPageData[sid]) return;
+    const runs = _agentPageData[sid].runs;
+
+    const parallelEl = document.getElementById('agent-parallel-' + sid);
+    const radarEl = document.getElementById('agent-radar-' + sid);
+
+    const checkedKeys = _getCheckedAgents('agent');
+    if (checkedKeys.length === 0) {
+        if (parallelEl) parallelEl.innerHTML = '<div class="empty-msg">Select runs to compare</div>';
+        if (radarEl) radarEl.innerHTML = '<div class="empty-msg">Select runs to compare</div>';
+        return;
+    }
+
+    // Map checked keys (run_0, run_1, ...) to sorted indices
+    const selectedRuns = checkedKeys.map(k => {
+        const idx = parseInt(k.replace('run_', ''));
+        // Get run from current sorted view (but we use original runs for data)
+        return runs[idx] || null;
+    }).filter(Boolean);
+
+    const mapped = selectedRuns.map((r, i) => ({
+        agent_name: 'Run ' + (runs.indexOf(r) + 1),
+        success: r.success,
+        success_rate: r.success ? 1 : 0,
+        steps_taken: r.steps_taken,
+        duration_s: r.duration_s,
+        distance_travelled: r.distance_travelled,
+        steps_score: r.steps_taken_score,
+        time_score: r.duration_s_score,
+        dist_score: r.distance_travelled_score,
+        _colorIdx: i,
+    }));
+
+    if (parallelEl && typeof Plotly !== 'undefined') renderParallelPlot(parallelEl, mapped);
+    if (radarEl && typeof Plotly !== 'undefined') renderRadarChart(radarEl, mapped);
 }
 
 // ===================================================================
@@ -1963,207 +2353,122 @@ async function loadAgentPage(agentName) {
 async function loadAboutPage() {
     const container = document.getElementById('about-page-content');
 
-    // Load scenarios for the table
     if (scenarios.length === 0) {
         try { scenarios = await fetchScenarios(); } catch (_) {}
     }
 
     let html = '';
 
-    // --- Hero ---
     html += '<h2>FlairSim Benchmark</h2>';
     html += '<p class="about-intro">';
     html += 'FlairSim is an open benchmark for evaluating autonomous AI agents on visual drone navigation tasks. ';
-    html += 'Agents are dropped at a random starting position over real French aerial imagery from the ';
+    html += 'Agents are dropped at a starting position over real French aerial imagery from the ';
     html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" style="color:var(--accent)">FLAIR-HUB</a> ';
     html += 'dataset and must locate a specified target using only egocentric visual observations.';
     html += '</p>';
 
-    // --- What is FlairSim ---
-    html += '<h3>What is FlairSim?</h3>';
+    html += '<h3>How It Works</h3>';
     html += '<p class="about-intro">';
-    html += 'FlairSim provides a standardised environment for benchmarking vision-language models (VLMs) and ';
-    html += 'autonomous agents on spatial reasoning, visual search, and navigation. Each scenario defines a ';
-    html += 'target object (e.g. "find the red car"), a region of interest (ROI) from real aerial imagery, ';
-    html += 'and constraints like maximum steps and available sensor modalities (RGB, infrared, elevation).';
-    html += '</p>';
-    html += '<p class="about-intro">';
-    html += 'The benchmark supports both <strong>AI agents</strong> (connecting via the REST API) and ';
-    html += '<strong>human players</strong> (using the web interface). All runs are scored with the same ';
-    html += 'methodology and ranked on a shared leaderboard, enabling direct comparison between AI and human performance.';
+    html += 'Each scenario defines a target object (e.g. "find the red car"), a region of interest (ROI) from real aerial imagery, ';
+    html += 'and constraints like maximum steps and available sensor modalities (RGB, infrared, elevation). ';
+    html += 'The agent can move in any direction, change altitude, and declare the target found when it believes it is within range.';
     html += '</p>';
 
-    // --- How to use (for agents) ---
+    html += '<h3>Metrics</h3>';
+    html += '<p class="about-intro">All runs are evaluated with flat, transparent metrics &mdash; no composite scores or hidden formulas:</p>';
+    html += '<div class="about-scoring">';
+    html += '<table class="leaderboard-table"><thead><tr><th>Metric</th><th>Type</th><th>Description</th></tr></thead><tbody>';
+    html += '<tr><td><strong>Success</strong></td><td>Boolean</td><td>Did the agent correctly identify and declare the target?</td></tr>';
+    html += '<tr><td><strong>Steps</strong></td><td>Integer</td><td>Total number of actions taken</td></tr>';
+    html += '<tr><td><strong>Time</strong></td><td>Float (s)</td><td>Wall-clock duration of the episode</td></tr>';
+    html += '<tr><td><strong>Distance</strong></td><td>Float (m)</td><td>Total horizontal distance travelled</td></tr>';
+    html += '<tr><td><strong>Target Seen</strong></td><td>Boolean</td><td>Was the target ever within the drone\'s field of view?</td></tr>';
+    html += '</tbody></table>';
+    html += '</div>';
+
+    html += '<h3>Normalized Scores</h3>';
+    html += '<p class="about-intro">';
+    html += 'For each numeric metric (Steps, Time, Distance), a <strong>normalized score</strong> is computed using min-max inversion: ';
+    html += '<code>Score = 1 &minus; (value &minus; min) / (max &minus; min)</code>. ';
+    html += 'The best agent gets 1.0, the worst gets 0.0. These scores are displayed alongside raw metrics in the tables and are used for all plots (parallel coordinates and radar charts). ';
+    html += 'Higher is always better for scores.';
+    html += '</p>';
+
+    html += '<h3>Best Run Selection: Pareto Front</h3>';
+    html += '<p class="about-intro">';
+    html += 'Since there is no single composite score, we use <strong>Pareto optimality</strong> to select the best run per agent. ';
+    html += 'A run is "Pareto-optimal" if no other run is strictly better on all criteria simultaneously.</p>';
+    html += '<div class="about-scoring">';
+    html += '<ol class="about-list">';
+    html += '<li><strong>Filter</strong>: only successful runs are considered. If an agent has no successful runs, we pick the run with the fewest steps.</li>';
+    html += '<li><strong>Pareto front</strong>: compute the set of non-dominated runs on three objectives (all minimised): steps, time, distance.</li>';
+    html += '<li><strong>Compromise</strong>: from the Pareto front, select the run closest to the origin (normalised Euclidean distance). This represents the best balanced trade-off.</li>';
+    html += '</ol>';
+    html += '</div>';
+
+    html += '<h3>Ranking Method: Rank-Vector Classification</h3>';
+    html += '<p class="about-intro">';
+    html += 'Since there is no composite score, we need a fair way to rank agents across multiple independent metrics. ';
+    html += 'We use <strong>rank-vector lexicographic comparison</strong>, which works as follows:';
+    html += '</p>';
+    html += '<div class="about-scoring">';
+    html += '<ol class="about-list">';
+    html += '<li><strong>Per-metric ranking</strong>: for each metric (steps, time, distance), all agents are ranked 1 to N (lower is better for all three).</li>';
+    html += '<li><strong>Rank vector</strong>: each agent collects its per-metric ranks into a vector, which is then sorted in ascending order. For example, an agent ranked 1st in steps, 3rd in time, 1st in distance gets the sorted vector <code>[1, 1, 3]</code>.</li>';
+    html += '<li><strong>Lexicographic comparison</strong>: agents are compared by their sorted rank vectors element by element. <code>[1, 1, 3]</code> beats <code>[1, 2, 3]</code> because the second element (1 vs 2) breaks the tie.</li>';
+    html += '<li><strong>Success first</strong>: agents with successful runs always rank above agents that failed, regardless of other metrics.</li>';
+    html += '</ol>';
+    html += '</div>';
+    html += '<p class="about-intro">';
+    html += 'This method rewards agents that are consistently good across all metrics, rather than excelling at one while being poor at others. ';
+    html += 'It is transparent, requires no arbitrary weights, and produces intuitive rankings.';
+    html += '</p>';
+
+    html += '<h3>Global Results</h3>';
+    html += '<p class="about-intro">';
+    html += 'The global results page shows only agents that have completed <strong>every scenario</strong> in the benchmark. ';
+    html += 'Each metric is averaged across all scenarios to produce a single comparable profile per agent. ';
+    html += 'Use the parallel coordinates plot and radar chart to visually compare agents.';
+    html += '</p>';
+
     html += '<h3>Using FlairSim for AI Agents</h3>';
     html += '<ol class="about-list">';
-    html += '<li><strong>Create a session</strong> via <code>POST /api/sessions</code> with your scenario ID, mode <code>"ai"</code>, and model info.</li>';
-    html += '<li><strong>Observe</strong> the environment via <code>GET /api/sessions/{id}/observe</code> to receive the drone\'s current visual observation (base64 image).</li>';
-    html += '<li><strong>Act</strong> by sending movement commands via <code>POST /api/sessions/{id}/step</code> with <code>dx</code>, <code>dy</code>, <code>dz</code> displacements.</li>';
-    html += '<li><strong>Repeat</strong> the observe/act loop until the agent declares the target found (<code>action_type: "found"</code>) or reaches the step limit.</li>';
-    html += '<li>The run is automatically scored and submitted to the leaderboard.</li>';
+    html += '<li><strong>Create a session</strong>: <code>POST /api/sessions</code> with scenario_id, mode "ai", and model info.</li>';
+    html += '<li><strong>Reset</strong>: <code>POST /api/sessions/{id}/sim/reset</code> to start the episode.</li>';
+    html += '<li><strong>Step</strong>: <code>POST /api/sessions/{id}/sim/step</code> with dx, dy, dz displacements or action_type "found".</li>';
+    html += '<li><strong>Submit</strong>: <code>POST /api/leaderboard/submit</code> with your run results.</li>';
     html += '</ol>';
-    html += '<div class="about-note">';
-    html += '<strong>Tip:</strong> Each observation includes metadata about position, altitude, available modalities, and remaining steps. ';
-    html += 'Agents can switch between sensor modalities (RGB, near-infrared, elevation) to gather complementary information.';
-    html += '</div>';
 
-    // --- Scoring ---
-    html += '<h3>Scoring Methodology</h3>';
-    html += '<p class="about-intro">';
-    html += 'Every completed run receives a score reflecting how efficiently the agent navigated to the target. ';
-    html += 'Scores range from <span class="range-badge range-fail">-100</span> (worst failure) to ';
-    html += '<span class="range-badge range-success">+100</span> (optimal success). ';
-    html += 'A score of 0 represents the boundary between success and failure.';
-    html += '</p>';
-
-    // Successful runs
-    html += '<div class="about-scoring">';
-    html += '<h4>Successful Runs &mdash; S &isin; [0, 100]</h4>';
-    html += '<p>When the agent correctly locates and declares the target found, the score rewards efficiency across three dimensions (distance, steps, time) plus a confidence bonus:</p>';
-    html += '<pre class="formula">';
-    html += '<span class="var">S</span> = <span class="brace">[</span> ';
-    html += '<span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">D</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">D</span><sub>agent</sub></span></span>';
-    html += ' + <span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">Step</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">Step</span><sub>agent</sub></span></span>';
-    html += ' + <span class="num">0.3</span> &middot; <span class="frac"><span class="frac-num"><span class="var">t</span><sub>min</sub></span><span class="frac-bar"></span><span class="frac-den"><span class="var">t</span><sub>agent</sub></span></span>';
-    html += ' + <span class="num">0.1</span> &middot; <span class="var">c</span> <span class="brace">]</span> &times; 100';
-    html += '</pre>';
-
-    html += '<ul class="formula-defs">';
-    html += '<li><code>D<sub>min</sub></code> &mdash; Euclidean (straight-line) distance between the scenario start position and the target position. This is a fixed geometric property of the scenario, representing the shortest possible path.</li>';
-    html += '<li><code>D<sub>agent</sub></code> &mdash; Total distance travelled by the current agent\'s run</li>';
-    html += '<li><code>Step<sub>min</sub></code> &mdash; Minimum steps taken across all successful runs for this scenario</li>';
-    html += '<li><code>Step<sub>agent</sub></code> &mdash; Steps taken by the current agent</li>';
-    html += '<li><code>t<sub>min</sub></code> &mdash; Minimum duration (seconds) across all successful runs for this scenario</li>';
-    html += '<li><code>t<sub>agent</sub></code> &mdash; Duration of the current agent\'s run</li>';
-    html += '<li><code>c</code> &mdash; Confidence score (0&ndash;1) optionally declared by the agent when finding the target. Represents the agent\'s certainty that the target is within its field of view. Defaults to 0 if not provided.</li>';
-    html += '</ul>';
-
-    html += '<div class="about-note">';
-    html += '<strong>Reference values:</strong> D<sub>min</sub> is the Euclidean distance from start to target (fixed per scenario). ';
-    html += 'Step<sub>min</sub> and t<sub>min</sub> are dynamically computed as the best values across <em>all</em> successful runs recorded for each scenario. ';
-    html += 'As more agents complete runs, these references may improve, recalibrating scores for future runs. ';
-    html += 'Each ratio is capped at 1.0, so an agent can never exceed the "perfect" baseline on any single dimension.';
-    html += '</div>';
-    html += '</div>'; // close about-scoring
-
-    // Failed runs
-    html += '<div class="about-scoring">';
-    html += '<h4>Failed Runs &mdash; F &isin; [-100, 0]</h4>';
-    html += '<p>When the agent fails to locate the target (step limit reached, or manual stop), the score penalises lack of exploration and overconfidence:</p>';
-    html += '<pre class="formula">';
-    html += '<span class="var">F</span> = &minus;100 &times; <span class="brace">[</span> <span class="num">0.5</span> &middot; (1 &minus; <span class="var">E</span>)';
-    html += ' + <span class="num">0.5</span> &middot; <span class="var">c</span> <span class="brace">]</span>';
-    html += '</pre>';
-
-    html += '<ul class="formula-defs">';
-    html += '<li><code>E</code> &mdash; FOV coverage (exploration ratio, 0&ndash;1): fraction of the region of interest that fell within the agent\'s field of view during the run. Higher exploration mitigates the penalty.</li>';
-    html += '<li><code>c</code> &mdash; Confidence (0&ndash;1): a high confidence on a failed run is penalised, since the agent was wrong.</li>';
-    html += '</ul>';
-
-    html += '<p>If the target was visible at any point during the run (<code>target_seen = true</code>), ';
-    html += 'the penalty is multiplied by <strong>1.5&times;</strong> before clamping to -100. ';
-    html += 'This penalises agents that saw the target but failed to declare it found.</p>';
-    html += '</div>'; // close about-scoring
-
-    // Global ranking
-    html += '<div class="about-scoring">';
-    html += '<h4>Global Ranking</h4>';
-    html += '<p>The global leaderboard ranks agents (not individual runs) by summing their best score per scenario. ';
-    html += 'For each agent, only the highest-scoring run on each scenario is kept. ';
-    html += 'The total score across all scenarios determines the agent\'s global rank.</p>';
-    html += '<p>AI and human agents are ranked in separate tabs to enable fair comparison within each category.</p>';
-    html += '</div>';
-
-    // --- Scenarios table ---
+    // Scenarios table
     if (scenarios.length > 0) {
         html += '<h3>Available Scenarios</h3>';
         html += '<div class="leaderboard-table-container"><table class="leaderboard-table"><thead><tr>';
-        html += '<th>Name</th><th>Domain</th><th>ROI</th><th>Environment</th><th>Difficulty</th><th>Max Steps</th>';
+        html += '<th>Name</th><th>Domain</th><th>Environment</th><th>Difficulty</th><th>Max Steps</th>';
         html += '</tr></thead><tbody>';
         scenarios.forEach(s => {
-            const id = s.scenario_id || s.id;
-            const name = s.name || id;
+            const name = s.name || s.scenario_id || s.id;
             const domain = s.dataset ? (s.dataset.domain || '-') : '-';
-            const roi = s.dataset ? (s.dataset.roi || '-') : '-';
             const env = s.environment ? s.environment.join(', ') : '-';
             const diff = s.difficulty || 0;
             let stars = '';
             for (let i = 1; i <= 3; i++) stars += i <= diff ? '\u2605' : '\u2606';
-            const maxSteps = s.max_steps || '-';
-            html += '<tr style="cursor:pointer" onclick="navigateTo(\'landing\')">';
+            html += '<tr>';
             html += '<td>' + escapeHtml(name) + '</td>';
             html += '<td>' + escapeHtml(domain) + '</td>';
-            html += '<td>' + escapeHtml(roi) + '</td>';
             html += '<td>' + escapeHtml(env) + '</td>';
             html += '<td>' + stars + '</td>';
-            html += '<td>' + escapeHtml(String(maxSteps)) + '</td>';
+            html += '<td>' + (s.max_steps || '-') + '</td>';
             html += '</tr>';
         });
         html += '</tbody></table></div>';
     }
 
-    // --- Links ---
-    html += '<h3>Links &amp; Resources</h3>';
+    html += '<h3>Links</h3>';
     html += '<div class="about-links">';
-    html += '<a href="https://github.com/gorreclu/flairsim" target="_blank" class="about-link-btn">';
-    html += '<svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
-    html += 'GitHub Repository';
-    html += '</a>';
-    html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" class="about-link-btn">';
-    html += '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
-    html += 'FLAIR-HUB Dataset';
-    html += '</a>';
+    html += '<a href="https://ignf.github.io/FLAIR/" target="_blank" class="about-link-btn">FLAIR-HUB Dataset</a>';
     html += '</div>';
 
     container.innerHTML = html;
-}
-
-// ===================================================================
-// Score Breakdown (for run-detail)
-// ===================================================================
-
-async function loadScoreBreakdown(runId, container) {
-    try {
-        const breakdown = await apiFetch('/leaderboard/' + runId + '/breakdown');
-        let html = '<div class="score-breakdown">';
-        html += '<h4>Score Breakdown</h4>';
-
-        const totalClass = breakdown.total >= 0 ? 'result-success' : 'result-fail';
-        html += '<div class="breakdown-total"><span class="' + totalClass + '" style="font-size:1.2rem;font-weight:700">' + breakdown.total.toFixed(1) + '</span></div>';
-
-        html += '<div class="breakdown-components">';
-        breakdown.components.forEach(c => {
-            const label = c.name.charAt(0).toUpperCase() + c.name.slice(1);
-            const ratio = c.ratio != null ? '(' + c.ratio.toFixed(2) + ')' : '';
-            const value = c.value != null ? '(' + c.value.toFixed(2) + ')' : '';
-            const detail = ratio || value;
-            const contrib = c.contribution >= 0 ? '+' + c.contribution.toFixed(1) : c.contribution.toFixed(1);
-            html += '<div class="breakdown-row">';
-            html += '<span class="breakdown-label">' + escapeHtml(label) + ' <span style="color:var(--text-muted)">' + detail + '</span></span>';
-            html += '<span class="breakdown-weight">&times;' + c.weight + '</span>';
-            html += '<span class="breakdown-contrib">' + contrib + '</span>';
-            html += '</div>';
-        });
-        html += '</div>';
-
-        if (breakdown.target_seen) {
-            html += '<div class="breakdown-note" style="color:var(--fail);font-size:0.75rem;margin-top:4px">Target seen: penalty &times;' + (breakdown.target_seen_multiplier || 1.5) + '</div>';
-        }
-
-        if (breakdown.reference_mins) {
-            const mins = breakdown.reference_mins;
-            html += '<div class="breakdown-refs" style="font-size:0.7rem;color:var(--text-muted);margin-top:8px">';
-            html += 'Ref: dist=' + (mins.distance != null ? Math.round(mins.distance) + 'm' : '-');
-            html += ' steps=' + (mins.steps != null ? mins.steps : '-');
-            html += ' time=' + (mins.time != null ? mins.time.toFixed(1) + 's' : '-');
-            html += '</div>';
-        }
-
-        html += '</div>';
-        container.innerHTML = html;
-    } catch (_) {
-        container.innerHTML = '';
-    }
 }
 
 // ===================================================================

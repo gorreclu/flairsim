@@ -175,12 +175,14 @@ body {
 .scenario-card h3 {
     font-size: 1.1rem;
     font-weight: 600;
+    text-align: center;
 }
 
 .scenario-card .scenario-desc {
     color: var(--text-secondary);
     font-size: 0.78rem;
     line-height: 1.4;
+    text-align: justify;
 }
 
 /* --- Scenario overview image --- */
@@ -258,6 +260,7 @@ body {
     display: flex;
     gap: 8px;
     margin-top: 4px;
+    justify-content: center;
 }
 
 .scenario-actions .btn {
@@ -1434,6 +1437,7 @@ kbd {
     border-radius: var(--radius-lg);
     padding: 20px;
     margin: 12px 0;
+    overflow-x: auto;
 }
 
 .about-scoring p {
@@ -1609,6 +1613,7 @@ kbd {
     aspect-ratio: 4 / 3;
     max-height: 180px;
     background: var(--bg-secondary);
+    margin: 0 auto;
 }
 
 .scenario-thumbnail img {
@@ -1736,4 +1741,193 @@ kbd {
     color: var(--accent);
     min-width: 48px;
     text-align: right;
+}
+
+/* =================================================================
+   Results Page
+   ================================================================= */
+
+.results-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.results-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.plot-container {
+    margin: 0;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 12px;
+    border: 1px solid var(--border);
+    min-width: 0;
+    height: 444px;
+    overflow: hidden;
+}
+
+.plot-container:empty {
+    display: none;
+}
+
+.plots-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 24px 0;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .plots-row { grid-template-columns: 1fr; }
+}
+
+/* Sortable table header */
+.sortable-th {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.sortable-th:hover {
+    color: var(--accent);
+}
+
+/* Best value highlight */
+.best-val {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+/* Agent color dot + checkbox column */
+.col-check {
+    width: 52px;
+    text-align: center;
+    padding: 4px 6px !important;
+    white-space: nowrap;
+}
+.agent-color-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.agent-plot-check {
+    accent-color: var(--accent);
+    vertical-align: middle;
+}
+
+.radar-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    margin: 12px 0;
+}
+
+.radar-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.radar-check {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.radar-check input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+/* =================================================================
+   Agent Page (enhanced)
+   ================================================================= */
+
+.agent-scenario-section {
+    margin: 32px 0;
+    padding: 20px;
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+}
+
+.agent-scenario-section h3 {
+    margin-bottom: 16px;
+}
+
+.agent-plots {
+    display: flex;
+    gap: 16px;
+    margin: 20px 0;
+}
+
+.agent-plot-half {
+    flex: 1;
+    min-height: 300px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    padding: 8px;
+    border: 1px solid var(--border);
+}
+
+.agent-trajectories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 20px;
+}
+
+.agent-traj-container {
+    width: 280px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+
+.agent-traj-label {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.agent-traj-map {
+    position: relative;
+    width: 280px;
+    height: 280px;
+}
+
+.agent-traj-map img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.agent-traj-map svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+@media (max-width: 900px) {
+    .agent-plots {
+        flex-direction: column;
+    }
+    .agent-plot-half {
+        min-height: 250px;
+    }
 }

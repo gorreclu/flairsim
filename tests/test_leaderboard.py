@@ -406,7 +406,7 @@ class TestMigration:
 
 
 class TestNewColumnsV2:
-    """Phase 2 columns: confidence, fov_coverage, target_seen."""
+    """Phase 2 columns: confidence, discovery_coverage, target_seen."""
 
     def test_submit_with_confidence(self, lb):
         run_id = lb.submit_run(_make_run(confidence=0.85))
@@ -418,10 +418,10 @@ class TestNewColumnsV2:
         run = lb.get_run(run_id)
         assert run["confidence"] is None
 
-    def test_submit_with_fov_coverage(self, lb):
-        run_id = lb.submit_run(_make_run(fov_coverage=0.42))
+    def test_submit_with_discovery_coverage(self, lb):
+        run_id = lb.submit_run(_make_run(discovery_coverage=0.42))
         run = lb.get_run(run_id)
-        assert run["fov_coverage"] == pytest.approx(0.42)
+        assert run["discovery_coverage"] == pytest.approx(0.42)
 
     def test_submit_with_target_seen(self, lb):
         run_id = lb.submit_run(_make_run(target_seen=True))
@@ -499,7 +499,7 @@ class TestAgentsTable:
         board.close()
 
     def test_migration_adds_new_run_columns(self, tmp_path):
-        """Old DB without confidence/fov_coverage/target_seen is migrated."""
+        """Old DB without confidence/discovery_coverage/target_seen is migrated."""
         import sqlite3
 
         db_path = tmp_path / "old2.db"
@@ -518,7 +518,7 @@ class TestAgentsTable:
             row[1] for row in board._conn.execute("PRAGMA table_info(runs)").fetchall()
         }
         assert "confidence" in col_names
-        assert "fov_coverage" in col_names
+        assert "discovery_coverage" in col_names
         assert "target_seen" in col_names
         board.close()
 
@@ -534,7 +534,6 @@ def _make_success_run(
     steps_taken: int = 10,
     distance_travelled: float = 100.0,
     duration_s: float = 10.0,
-    confidence: float = 1.0,
     **kwargs,
 ) -> dict:
     """Helper: build a successful run with all scoring-relevant fields."""
@@ -545,472 +544,279 @@ def _make_success_run(
         steps_taken=steps_taken,
         distance_travelled=distance_travelled,
         duration_s=duration_s,
-        confidence=confidence,
         **kwargs,
     )
 
 
-class TestScoringFunctions:
-    """Tests for compute_score_for_run, get_best_runs_per_scenario,
-    and get_global_leaderboard."""
-
-    # ------------------------------------------------------------------
-    # compute_score_for_run – success path
-    # ------------------------------------------------------------------
-
-    def test_compute_score_success_basic(self, lb):
-        """Single successful run is also the best on the scenario.
-
-        All ratios = 1.0, confidence = 1.0 → score = 100.
-        Formula: (0.3×1 + 0.3×1 + 0.3×1 + 0.1×1) × 100 = 100.0
-        """
-        run_id = lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_basic",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_basic")
-        assert score == pytest.approx(100.0)
-
-    def test_compute_score_success_worse_than_best(self, lb):
-        """Best run (steps=10, dist=100, t=10) inserted first.
-
-        Worse run (steps=20, dist=200, t=20) should score < 100.
-        D_min (Euclidean start-to-target distance) is passed as 100.0
-        so the distance ratio for the worse run is 100/200 = 0.5.
-        """
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_worse",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        worse_id = lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_worse",
-                steps_taken=20,
-                distance_travelled=200.0,
-                duration_s=20.0,
-                confidence=1.0,
-            )
-        )
-        worse_run = lb.get_run(worse_id)
-        score = lb.compute_score_for_run(worse_run, "sc_worse", d_min=100.0)
-        # d_min/D_agent=100/200=0.5, step ratio=0.5, time ratio=0.5, conf=1
-        # → (0.3×0.5 + 0.3×0.5 + 0.3×0.5 + 0.1×1)×100 = 55
-        assert score == pytest.approx(55.0)
-        assert score < 100.0
-
-    # ------------------------------------------------------------------
-    # compute_score_for_run – failure path
-    # ------------------------------------------------------------------
-
-    def test_compute_score_failure_basic(self, lb):
-        """Failed run, fov_coverage=0.5, confidence=0.5, target_seen=False.
-
-        F = -100 × [0.5×(1-0.5) + 0.5×0.5] = -100×[0.25+0.25] = -50.0
-        """
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_fail",
-                success=False,
-                fov_coverage=0.5,
-                confidence=0.5,
-                target_seen=False,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_fail")
-        assert score == pytest.approx(-50.0)
-
-    def test_compute_score_failure_target_seen(self, lb):
-        """Same failure but target_seen=True → multiply by 1.5 → -75.0."""
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_fail_ts",
-                success=False,
-                fov_coverage=0.5,
-                confidence=0.5,
-                target_seen=True,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_fail_ts")
-        assert score == pytest.approx(-75.0)
-
-    def test_compute_score_failure_clamped(self, lb):
-        """Extreme failure values must not go below -100."""
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_clamp",
-                success=False,
-                fov_coverage=0.0,
-                confidence=1.0,
-                target_seen=True,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_clamp")
-        # F = -100 × [0.5×1.0 + 0.5×1.0] × 1.5 = -150, clamped to -100
-        assert score >= -100.0
-
-    # ------------------------------------------------------------------
-    # get_best_runs_per_scenario
-    # ------------------------------------------------------------------
-
-    def test_get_best_runs_per_scenario(self, lb):
-        """One failed + one successful run on same scenario.
-
-        Best run should be the successful one.
-        """
-        lb.submit_run(_make_run(scenario_id="sc_best", success=False, steps_taken=5))
-        good_id = lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_best",
-                steps_taken=10,
-                distance_travelled=100.0,
-            )
-        )
-        best = lb.get_best_runs_per_scenario(["sc_best"])
-        assert "sc_best" in best
-        assert best["sc_best"]["id"] == good_id
-        assert best["sc_best"]["success"] is True
-
-    def test_get_best_runs_per_scenario_empty(self, lb):
-        """No runs at all → empty dict returned."""
-        best = lb.get_best_runs_per_scenario(["sc_none"])
-        assert best == {}
-
-    def test_get_best_runs_per_scenario_selects_fewer_steps(self, lb):
-        """Among successful runs, the one with fewer steps wins."""
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_steps",
-                steps_taken=20,
-                distance_travelled=200.0,
-            )
-        )
-        best_id = lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_steps",
-                steps_taken=10,
-                distance_travelled=200.0,
-            )
-        )
-        best = lb.get_best_runs_per_scenario(["sc_steps"])
-        assert best["sc_steps"]["id"] == best_id
-
-    # ------------------------------------------------------------------
-    # get_global_leaderboard
-    # ------------------------------------------------------------------
-
-    def test_get_global_leaderboard_single_agent(self, lb):
-        """1 agent, 1 scenario, 1 successful run → appears in leaderboard."""
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_lb",
-                player_name="Solo",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        board = lb.get_global_leaderboard(["sc_lb"])
-        assert len(board) == 1
-        entry = board[0]
-        assert entry["agent_name"] == "Solo"
-        assert entry["scenarios_attempted"] == 1
-        assert entry["total_score"] == pytest.approx(100.0)
-        assert len(entry["runs"]) == 1
-
-    def test_get_global_leaderboard_multiple_agents(self, lb):
-        """2 agents on same scenario → sorted by total_score DESC."""
-        # Best agent: all ratios = 1 → 100 pts
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_multi",
-                player_name="Best",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        # Worse agent: steps=20, dist=200, t=20 → 55 pts
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_multi",
-                player_name="Worse",
-                steps_taken=20,
-                distance_travelled=200.0,
-                duration_s=20.0,
-                confidence=1.0,
-            )
-        )
-        board = lb.get_global_leaderboard(["sc_multi"])
-        assert len(board) == 2
-        assert board[0]["agent_name"] == "Best"
-        assert board[0]["total_score"] > board[1]["total_score"]
-
-    def test_get_global_leaderboard_empty(self, lb):
-        """No runs at all → empty leaderboard."""
-        board = lb.get_global_leaderboard(["sc_empty"])
-        assert board == []
-
-    def test_get_global_leaderboard_limit(self, lb):
-        """limit parameter caps number of agents returned."""
-        for i in range(5):
-            lb.submit_run(
-                _make_success_run(
-                    scenario_id="sc_limit",
-                    player_name=f"Agent{i}",
-                    steps_taken=10 + i,
-                    distance_travelled=100.0 + i,
-                    duration_s=10.0 + i,
-                    confidence=1.0,
-                )
-            )
-        board = lb.get_global_leaderboard(["sc_limit"], limit=3)
-        assert len(board) == 3
-
-    def test_get_global_leaderboard_model_name_agent(self, lb):
-        """AI runs identified by model_name appear in leaderboard."""
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_ai",
-                player_name=None,
-                model_name="GPT-4o",
-                mode="ai",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        board = lb.get_global_leaderboard(["sc_ai"])
-        assert len(board) == 1
-        assert board[0]["agent_name"] == "GPT-4o"
-
-    def test_get_global_leaderboard_excludes_other_scenarios(self, lb):
-        """Runs on scenarios not in the list are excluded."""
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_included",
-                player_name="Agent",
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=1.0,
-            )
-        )
-        lb.submit_run(
-            _make_success_run(
-                scenario_id="sc_excluded",
-                player_name="Agent",
-                steps_taken=5,
-                distance_travelled=50.0,
-                duration_s=5.0,
-                confidence=1.0,
-            )
-        )
-        board = lb.get_global_leaderboard(["sc_included"])
-        assert len(board) == 1
-        entry = board[0]
-        # Only 1 scenario counted
-        assert entry["scenarios_attempted"] == 1
-
-    # ------------------------------------------------------------------
-    # Edge-case: None values in scoring fields
-    # ------------------------------------------------------------------
-
-    def test_compute_score_failure_confidence_none(self, lb):
-        """Run with confidence=None should treat it as 0.0 in failure formula.
-
-        F = -100 × [0.5×(1-0.5) + 0.5×0.0] = -100 × 0.25 = -25.0
-        """
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="s1",
-                mode="human",
-                success=False,
-                fov_coverage=0.5,
-                confidence=None,
-                target_seen=False,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "s1")
-        assert score == pytest.approx(-25.0)
-
-    def test_get_best_runs_per_scenario_tiebreak_distance(self, lb):
-        """Among runs with the same min steps, shortest distance wins."""
-        lb.submit_run(
-            _make_run(
-                scenario_id="s1",
-                mode="human",
-                success=True,
-                steps_taken=10,
-                distance_travelled=500.0,
-            )
-        )
-        lb.submit_run(
-            _make_run(
-                scenario_id="s1",
-                mode="human",
-                success=True,
-                steps_taken=10,
-                distance_travelled=200.0,
-            )
-        )
-        result = lb.get_best_runs_per_scenario(["s1"])
-        assert result["s1"]["distance_travelled"] == 200.0
-
-    def test_compute_score_success_confidence_none(self, lb):
-        """confidence=None should be treated as 0.0 in success formula.
-
-        Single run is its own reference: all ratios = 1.0, confidence = 0.0
-        S = (0.3×1 + 0.3×1 + 0.3×1 + 0.1×0) × 100 = 90.0
-        """
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_conf_none_s",
-                mode="human",
-                success=True,
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=10.0,
-                confidence=None,
-            )
-        )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_conf_none_s")
-        assert score == pytest.approx(90.0)
-
-
 # ---------------------------------------------------------------------------
-# Score breakdown
+# Pareto front
 # ---------------------------------------------------------------------------
 
 
-class TestComputeScoreBreakdown:
-    """Tests for Leaderboard.compute_score_breakdown()."""
+class TestParetoFront:
+    """Tests for Leaderboard.compute_pareto_front()."""
 
-    def test_breakdown_success(self, lb):
-        """Successful run should return a breakdown with 4 components,
-        reference_mins, and success=True."""
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_breakdown_ok",
-                mode="ai",
-                success=True,
-                steps_taken=10,
-                distance_travelled=100.0,
-                duration_s=8.0,
-                confidence=0.9,
-            )
+    def test_empty_returns_empty(self):
+        assert Leaderboard.compute_pareto_front([], ["steps_taken"]) == []
+
+    def test_single_run_is_front(self):
+        runs = [{"steps_taken": 10, "duration_s": 5}]
+        front = Leaderboard.compute_pareto_front(runs, ["steps_taken", "duration_s"])
+        assert front == runs
+
+    def test_dominated_run_excluded(self):
+        a = {"steps_taken": 10, "duration_s": 5, "id": "a"}
+        b = {"steps_taken": 20, "duration_s": 10, "id": "b"}  # dominated by a
+        front = Leaderboard.compute_pareto_front([a, b], ["steps_taken", "duration_s"])
+        assert len(front) == 1
+        assert front[0]["id"] == "a"
+
+    def test_non_dominated_both_kept(self):
+        a = {"steps_taken": 10, "duration_s": 20, "id": "a"}
+        b = {"steps_taken": 20, "duration_s": 5, "id": "b"}
+        front = Leaderboard.compute_pareto_front([a, b], ["steps_taken", "duration_s"])
+        assert len(front) == 2
+
+    def test_identical_runs_all_kept(self):
+        a = {"steps_taken": 10, "duration_s": 5, "id": "a"}
+        b = {"steps_taken": 10, "duration_s": 5, "id": "b"}
+        front = Leaderboard.compute_pareto_front([a, b], ["steps_taken", "duration_s"])
+        assert len(front) == 2
+
+    def test_none_values_treated_as_inf(self):
+        a = {"steps_taken": 10, "duration_s": None, "id": "a"}
+        b = {"steps_taken": 20, "duration_s": 5, "id": "b"}
+        front = Leaderboard.compute_pareto_front([a, b], ["steps_taken", "duration_s"])
+        # Neither dominates the other (a has None=inf on duration)
+        assert len(front) == 2
+
+
+# ---------------------------------------------------------------------------
+# Select best run (Pareto)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectBestRunPareto:
+    """Tests for Leaderboard.select_best_run_pareto()."""
+
+    def test_empty_returns_none(self):
+        assert Leaderboard.select_best_run_pareto([]) is None
+
+    def test_single_success(self):
+        r = {
+            "success": True,
+            "steps_taken": 10,
+            "duration_s": 5,
+            "distance_travelled": 100,
+        }
+        assert Leaderboard.select_best_run_pareto([r]) == r
+
+    def test_picks_dominating_success(self):
+        a = {
+            "success": True,
+            "steps_taken": 10,
+            "duration_s": 5,
+            "distance_travelled": 50,
+            "id": "a",
+        }
+        b = {
+            "success": True,
+            "steps_taken": 20,
+            "duration_s": 10,
+            "distance_travelled": 100,
+            "id": "b",
+        }
+        best = Leaderboard.select_best_run_pareto([a, b])
+        assert best["id"] == "a"
+
+    def test_no_success_picks_fewest_steps(self):
+        a = {"success": False, "steps_taken": 50, "id": "a"}
+        b = {"success": False, "steps_taken": 20, "id": "b"}
+        best = Leaderboard.select_best_run_pareto([a, b])
+        assert best["id"] == "b"
+
+    def test_no_success_none_steps(self):
+        a = {"success": False, "steps_taken": None, "id": "a"}
+        b = {"success": False, "steps_taken": 10, "id": "b"}
+        best = Leaderboard.select_best_run_pareto([a, b])
+        assert best["id"] == "b"
+
+    def test_compromise_closest_to_origin(self):
+        """Among 2 non-dominated successful runs, picks the one closest to origin."""
+        a = {
+            "success": True,
+            "steps_taken": 10,
+            "duration_s": 100,
+            "distance_travelled": 100,
+            "id": "a",
+        }
+        b = {
+            "success": True,
+            "steps_taken": 100,
+            "duration_s": 10,
+            "distance_travelled": 100,
+            "id": "b",
+        }
+        c = {
+            "success": True,
+            "steps_taken": 20,
+            "duration_s": 20,
+            "distance_travelled": 50,
+            "id": "c",
+        }
+        best = Leaderboard.select_best_run_pareto([a, b, c])
+        # c should be the compromise (closest to origin after normalisation)
+        assert best["id"] == "c"
+
+
+# ---------------------------------------------------------------------------
+# Scenario results
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioResults:
+    """Tests for Leaderboard.get_scenario_results()."""
+
+    def test_empty_scenario(self, lb):
+        result = lb.get_scenario_results("nonexistent")
+        assert result["scenario_id"] == "nonexistent"
+        assert result["agents"] == []
+
+    def test_one_agent_one_run(self, lb):
+        lb.submit_run(_make_success_run(scenario_id="s1", player_name="Alice"))
+        result = lb.get_scenario_results("s1")
+        assert len(result["agents"]) == 1
+        assert result["agents"][0]["agent_name"] == "Alice"
+        assert result["agents"][0]["success"] is True
+
+    def test_two_agents(self, lb):
+        lb.submit_run(
+            _make_success_run(scenario_id="s1", player_name="Alice", steps_taken=10)
         )
-        run = lb.get_run(run_id)
-        bd = lb.compute_score_breakdown(run, "sc_breakdown_ok")
-
-        assert bd["success"] is True
-        assert isinstance(bd["total"], float)
-        assert bd["total"] > 0
-
-        # 4 components: distance, steps, time, confidence
-        assert len(bd["components"]) == 4
-        names = {c["name"] for c in bd["components"]}
-        assert names == {"distance", "steps", "time", "confidence"}
-
-        # Each component has required keys
-        for c in bd["components"]:
-            assert "weight" in c
-            assert "contribution" in c
-
-        # Reference mins present
-        assert "reference_mins" in bd
-        assert "distance" in bd["reference_mins"]
-        assert "steps" in bd["reference_mins"]
-        assert "time" in bd["reference_mins"]
-
-    def test_breakdown_failure(self, lb):
-        """Failed run should return breakdown with 2 components and
-        success=False."""
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_breakdown_fail",
-                mode="human",
-                success=False,
-                steps_taken=50,
-                distance_travelled=500.0,
-                duration_s=30.0,
-                confidence=0.7,
-                fov_coverage=0.4,
-                target_seen=False,
-            )
+        lb.submit_run(
+            _make_success_run(scenario_id="s1", player_name="Bob", steps_taken=20)
         )
-        run = lb.get_run(run_id)
-        bd = lb.compute_score_breakdown(run, "sc_breakdown_fail")
+        result = lb.get_scenario_results("s1")
+        assert len(result["agents"]) == 2
+        # Sorted by steps ascending (both successful)
+        assert result["agents"][0]["agent_name"] == "Alice"
 
-        assert bd["success"] is False
-        assert isinstance(bd["total"], float)
-        assert bd["total"] <= 0
+    def test_best_run_selected_per_agent(self, lb):
+        lb.submit_run(
+            _make_success_run(scenario_id="s1", player_name="Alice", steps_taken=50)
+        )
+        lb.submit_run(
+            _make_success_run(scenario_id="s1", player_name="Alice", steps_taken=10)
+        )
+        result = lb.get_scenario_results("s1")
+        assert len(result["agents"]) == 1
+        assert result["agents"][0]["steps_taken"] == 10
 
-        # 2 components: exploration + confidence
-        assert len(bd["components"]) == 2
-        names = {c["name"] for c in bd["components"]}
-        assert names == {"exploration", "confidence"}
-
-        assert bd["target_seen"] is False
-
-    def test_breakdown_failure_target_seen(self, lb):
-        """Failed run with target_seen=True should include the penalty
-        multiplier."""
-        run_id = lb.submit_run(
-            _make_run(
-                scenario_id="sc_breakdown_ts",
-                mode="ai",
-                success=False,
-                steps_taken=20,
-                distance_travelled=200.0,
-                duration_s=15.0,
-                confidence=0.5,
-                fov_coverage=0.3,
+    def test_flat_metrics_present(self, lb):
+        lb.submit_run(
+            _make_success_run(
+                scenario_id="s1",
+                player_name="Alice",
+                discovery_coverage=0.8,
                 target_seen=True,
             )
         )
-        run = lb.get_run(run_id)
-        bd = lb.compute_score_breakdown(run, "sc_breakdown_ts")
+        result = lb.get_scenario_results("s1")
+        agent = result["agents"][0]
+        for key in (
+            "success",
+            "steps_taken",
+            "duration_s",
+            "distance_travelled",
+            "target_seen",
+        ):
+            assert key in agent
 
-        assert bd["success"] is False
-        assert bd["target_seen"] is True
-        assert bd.get("target_seen_multiplier") == 1.5
-        # Score should be more negative than without target_seen
-        assert bd["total"] < -50
 
-    def test_breakdown_success_total_matches_score(self, lb):
-        """Breakdown total should equal compute_score_for_run for the
-        same successful run."""
-        run_id = lb.submit_run(
+# ---------------------------------------------------------------------------
+# Global results
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalResults:
+    """Tests for Leaderboard.get_global_results()."""
+
+    def test_empty(self, lb):
+        result = lb.get_global_results(["s1", "s2"])
+        assert result["agents"] == []
+
+    def test_agent_must_complete_all_scenarios(self, lb):
+        lb.submit_run(_make_success_run(scenario_id="s1", player_name="Alice"))
+        # Alice only did s1, not s2
+        result = lb.get_global_results(["s1", "s2"])
+        assert result["agents"] == []
+
+    def test_agent_completes_all(self, lb):
+        lb.submit_run(
+            _make_success_run(scenario_id="s1", player_name="Alice", steps_taken=10)
+        )
+        lb.submit_run(
+            _make_success_run(scenario_id="s2", player_name="Alice", steps_taken=20)
+        )
+        result = lb.get_global_results(["s1", "s2"])
+        assert len(result["agents"]) == 1
+        agent = result["agents"][0]
+        assert agent["agent_name"] == "Alice"
+        assert agent["success_rate"] == 1.0
+        assert agent["avg_steps_taken"] == 15.0
+
+    def test_sorted_by_success_rate(self, lb):
+        # Alice: 2/2 success
+        lb.submit_run(_make_success_run(scenario_id="s1", player_name="Alice"))
+        lb.submit_run(_make_success_run(scenario_id="s2", player_name="Alice"))
+        # Bob: 1/2 success
+        lb.submit_run(_make_success_run(scenario_id="s1", player_name="Bob"))
+        lb.submit_run(
             _make_run(
-                scenario_id="sc_breakdown_match",
-                mode="ai",
-                success=True,
-                steps_taken=15,
-                distance_travelled=120.0,
-                duration_s=12.0,
-                confidence=0.8,
+                scenario_id="s2",
+                player_name="Bob",
+                success=False,
+                discovery_coverage=0.5,
             )
         )
-        run = lb.get_run(run_id)
-        score = lb.compute_score_for_run(run, "sc_breakdown_match")
-        bd = lb.compute_score_breakdown(run, "sc_breakdown_match")
-        assert bd["total"] == pytest.approx(score, abs=0.1)
+        result = lb.get_global_results(["s1", "s2"])
+        assert len(result["agents"]) == 2
+        assert result["agents"][0]["agent_name"] == "Alice"
+
+    def test_empty_scenario_list(self, lb):
+        result = lb.get_global_results([])
+        assert result == {"scenario_ids": [], "agents": []}
+
+
+# ---------------------------------------------------------------------------
+# Agent runs
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRuns:
+    """Tests for Leaderboard.get_agent_runs()."""
+
+    def test_empty(self, lb):
+        runs = lb.get_agent_runs("nobody")
+        assert runs == []
+
+    def test_returns_all_runs(self, lb):
+        lb.submit_run(_make_run(scenario_id="s1", player_name="Alice"))
+        lb.submit_run(_make_run(scenario_id="s2", player_name="Alice"))
+        lb.submit_run(_make_run(scenario_id="s1", player_name="Bob"))
+        runs = lb.get_agent_runs("Alice")
+        assert len(runs) == 2
+
+    def test_filter_by_scenario(self, lb):
+        lb.submit_run(_make_run(scenario_id="s1", player_name="Alice"))
+        lb.submit_run(_make_run(scenario_id="s2", player_name="Alice"))
+        runs = lb.get_agent_runs("Alice", scenario_id="s1")
+        assert len(runs) == 1
+        assert runs[0]["scenario_id"] == "s1"
+
+    def test_model_name_match(self, lb):
+        lb.submit_run(
+            _make_run(scenario_id="s1", player_name=None, model_name="GPT-4o")
+        )
+        runs = lb.get_agent_runs("GPT-4o")
+        assert len(runs) == 1

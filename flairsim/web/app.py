@@ -15,7 +15,7 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -607,96 +607,32 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Agent not found")
         return agent
 
-    # ---------------------------------------------------------------
-    # D_min helpers — Euclidean start-to-target distance
-    # ---------------------------------------------------------------
-
-    def _compute_d_min(scenario_id: str) -> Optional[float]:
-        """Compute Euclidean distance between scenario start and target.
-
-        Returns ``None`` if the scenario cannot be loaded or the start
-        coordinates are not defined.
-        """
-        try:
-            scenario = session_mgr.scenario_loader.get(scenario_id)
-        except (FileNotFoundError, ValueError):
-            return None
-        if scenario.start.x is None or scenario.start.y is None:
-            return None
-        return scenario.target.distance_to(scenario.start.x, scenario.start.y)
-
-    def _build_d_min_map(scenario_ids: List[str]) -> Dict[str, float]:
-        """Build ``{scenario_id: d_min}`` for all given scenarios."""
-        d_mins: Dict[str, float] = {}
-        for sid in scenario_ids:
-            d = _compute_d_min(sid)
-            if d is not None:
-                d_mins[sid] = d
-        return d_mins
+    @app.get("/api/agents/{name}/runs")
+    async def get_agent_runs_endpoint(
+        name: str, scenario_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return all runs for a given agent."""
+        runs = leaderboard.get_agent_runs(name, scenario_id=scenario_id)
+        return {"agent_name": name, "runs": runs}
 
     # ---------------------------------------------------------------
     # Global and per-scenario leaderboards (must be BEFORE /{run_id})
     # ---------------------------------------------------------------
 
     @app.get("/api/leaderboard/global")
-    async def get_global_leaderboard(
-        limit: int = 50, mode: Optional[str] = None
+    async def get_global_results_endpoint(
+        mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Global cross-scenario agent ranking.
-
-        Optional ``mode`` query parameter (``ai`` or ``human``) filters
-        runs before aggregation.
-        """
+        """Global results: averaged flat metrics for agents that completed all scenarios."""
         scenario_ids = session_mgr.scenario_loader.list_ids()
-        d_min_map = _build_d_min_map(scenario_ids)
-        entries = leaderboard.get_global_leaderboard(
-            scenario_ids,
-            limit=limit,
-            mode=mode,
-            d_min_by_scenario=d_min_map,
-        )
-        # Return scenario IDs so frontend can build per-scenario columns.
-        return {"leaderboard": entries, "scenario_ids": scenario_ids}
+        return leaderboard.get_global_results(scenario_ids, mode=mode)
 
     @app.get("/api/leaderboard/scenario/{scenario_id}")
-    async def get_scenario_leaderboard(
-        scenario_id: str, mode: Optional[str] = None, limit: int = 50
+    async def get_scenario_results_endpoint(
+        scenario_id: str, mode: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Per-scenario scored leaderboard, sorted by score DESC.
-
-        Optional ``mode`` query parameter (``ai`` or ``human``) filters
-        runs before scoring so only the requested category is ranked.
-        """
-        d_min = _compute_d_min(scenario_id)
-
-        # Fetch all runs first; apply limit after scoring so we rank correctly.
-        all_runs = leaderboard.get_runs(scenario_id=scenario_id, mode=mode, limit=1000)
-        scored_runs = []
-        for run in all_runs:
-            run_copy = dict(run)
-            run_copy["score"] = leaderboard.compute_score_for_run(
-                run_copy,
-                scenario_id,
-                d_min=d_min,
-            )
-            scored_runs.append(run_copy)
-        scored_runs.sort(key=lambda r: r["score"], reverse=True)
-        return {"scenario_id": scenario_id, "runs": scored_runs[:limit]}
-
-    @app.get("/api/leaderboard/{run_id}/breakdown")
-    async def get_run_breakdown(run_id: str) -> Dict[str, Any]:
-        """Return the detailed score breakdown for a single run."""
-        run = leaderboard.get_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="Run not found")
-        scenario_id = run["scenario_id"]
-        d_min = _compute_d_min(scenario_id)
-        breakdown = leaderboard.compute_score_breakdown(
-            run,
-            scenario_id,
-            d_min=d_min,
-        )
-        return breakdown
+        """Per-scenario results with flat metrics, one best run per agent (Pareto)."""
+        return leaderboard.get_scenario_results(scenario_id, mode=mode)
 
     @app.get("/api/leaderboard/{run_id}")
     async def get_leaderboard_run(run_id: str) -> Dict[str, Any]:
