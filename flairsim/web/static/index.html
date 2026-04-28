@@ -14,7 +14,8 @@
         <header class="top-bar">
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
@@ -124,7 +125,8 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
@@ -139,55 +141,50 @@
     </section>
 
     <!-- ============================================================ -->
-    <!-- LEADERBOARD VIEW                                              -->
+    <!-- RESULTS VIEW (GLOBAL)                                         -->
     <!-- ============================================================ -->
-    <section id="view-leaderboard" class="view">
+    <section id="view-results" class="view">
         <header class="top-bar">
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
 
-        <div class="leaderboard-content">
-            <h2>Leaderboard</h2>
-
-            <!-- Tab switcher -->
-            <div class="lb-tabs">
-                <button id="lb-tab-global" class="lb-tab active" onclick="switchLbTab('global')">Global Ranking</button>
-                <button id="lb-tab-scenario" class="lb-tab" onclick="switchLbTab('scenario')">Per Scenario</button>
+        <div class="results-content">
+            <div class="results-tabs">
+                <button id="res-tab-global" class="lb-tab active" onclick="switchResultsTab('global')">Global Results</button>
+                <button id="res-tab-scenario" class="lb-tab" onclick="switchResultsTab('scenario')">Per Scenario</button>
             </div>
 
-            <!-- Global ranking panel -->
-            <div id="lb-panel-global" class="lb-panel">
-                <div class="leaderboard-filters">
-                    <div class="lb-sub-tabs">
-                        <button class="lb-sub-tab active" id="lb-global-mode-ai" onclick="switchGlobalLbMode('ai')">AI Agents</button>
-                        <button class="lb-sub-tab" id="lb-global-mode-human" onclick="switchGlobalLbMode('human')">Human</button>
-                    </div>
-                </div>
-                <div id="lb-global-container" class="leaderboard-table-container">
+            <!-- Global panel -->
+            <div id="res-panel-global" class="lb-panel">
+                <p class="subtitle">Average metrics across all scenarios (only agents who completed every scenario)</p>
+                <div id="global-results-table" class="leaderboard-table-container">
                     <div class="loading-msg">Loading...</div>
+                </div>
+                <div class="plots-row">
+                    <div id="global-parallel-plot" class="plot-container"></div>
+                    <div id="global-radar-chart" class="plot-container"></div>
                 </div>
             </div>
 
             <!-- Per-scenario panel -->
-            <div id="lb-panel-scenario" class="lb-panel" hidden>
+            <div id="res-panel-scenario" class="lb-panel" hidden>
                 <div class="leaderboard-filters">
                     <label>Scenario
-                        <select id="lb-filter-scenario">
-                            <option value="">All scenarios</option>
-                        </select>
+                        <select id="res-filter-scenario"></select>
                     </label>
-                    <div class="lb-sub-tabs">
-                        <button class="lb-sub-tab active" id="lb-mode-ai" onclick="switchLbMode('ai')">AI Agents</button>
-                        <button class="lb-sub-tab" id="lb-mode-human" onclick="switchLbMode('human')">Human</button>
-                    </div>
                 </div>
-                <div id="leaderboard-table-container" class="leaderboard-table-container">
-                    <div class="loading-msg">Loading...</div>
+                <div id="scenario-results-table" class="leaderboard-table-container">
+                    <div class="loading-msg">Select a scenario...</div>
+                </div>
+                <div class="plots-row">
+                    <div id="scenario-parallel-plot" class="plot-container"></div>
+                    <div id="scenario-radar-chart" class="plot-container"></div>
                 </div>
             </div>
         </div>
@@ -201,7 +198,8 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
+                <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
@@ -220,8 +218,6 @@
             </div>
 
             <div class="detail-right">
-                <div id="detail-score-breakdown"></div>
-
                 <div class="detail-section">
                     <h3>Steps</h3>
                     <div class="steps-list" id="detail-steps-list">
@@ -245,7 +241,7 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
                 <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
@@ -263,8 +259,9 @@
             <h1 class="logo">FlairSim <span class="accent">Benchmark</span></h1>
             <nav>
                 <button class="btn btn-ghost" onclick="navigateTo('landing')">Scenarios</button>
-                <button class="btn btn-ghost" onclick="navigateTo('leaderboard')">Leaderboard</button>
+                <button class="btn btn-ghost" onclick="navigateTo('results')">Results</button>
                 <button class="btn btn-ghost" onclick="navigateTo('processes')">Active Processes</button>
+                <button class="btn btn-ghost" onclick="navigateTo('about')">About</button>
             </nav>
         </header>
         <div class="about-page-content" id="about-page-content">
@@ -329,6 +326,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <script src="app.js"></script>
 </body>
 </html>

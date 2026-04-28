@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS runs (
     metrics         TEXT,
     score_final     REAL,
     confidence      REAL,
-    fov_coverage    REAL,
+    discovery_coverage    REAL,
     target_seen     INTEGER,
     created_at      TEXT NOT NULL
 );
@@ -96,12 +96,22 @@ class Leaderboard:
             ("score_final", "REAL"),
             ("confidence", "REAL"),
             ("fov_coverage", "REAL"),
+            ("discovery_coverage", "REAL"),
             ("target_seen", "INTEGER"),
         ]
         for col, dtype in migrations:
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {dtype}")
                 logger.info("Migrated leaderboard: added column '%s'", col)
+
+        # Copy fov_coverage → discovery_coverage for legacy rows.
+        if "fov_coverage" in existing or "fov_coverage" in [
+            m[0] for m in migrations if m[0] == "fov_coverage"
+        ]:
+            self._conn.execute(
+                "UPDATE runs SET discovery_coverage = fov_coverage "
+                "WHERE discovery_coverage IS NULL AND fov_coverage IS NOT NULL"
+            )
 
         tables = {
             row[0]
@@ -127,7 +137,7 @@ class Leaderboard:
             ``duration_s``, ``trajectory`` (list of dicts),
             ``steps_detail`` (list of dicts), ``model_info`` (dict),
             ``metrics`` (dict), ``score_final`` (float or None),
-            ``confidence`` (float or None), ``fov_coverage`` (float or None),
+            ``confidence`` (float or None), ``discovery_coverage`` (float or None),
             ``target_seen`` (bool or None).
 
         Returns
@@ -160,7 +170,7 @@ class Leaderboard:
                 (id, session_id, scenario_id, player_name, model_name,
                  mode, success, reason, steps_taken, distance_travelled,
                  duration_s, trajectory, steps_detail, model_info,
-                 metrics, score_final, confidence, fov_coverage, target_seen, created_at)
+                 metrics, score_final, confidence, discovery_coverage, target_seen, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -181,7 +191,7 @@ class Leaderboard:
                 metrics,
                 run_data.get("score_final"),
                 run_data.get("confidence"),
-                run_data.get("fov_coverage"),
+                run_data.get("discovery_coverage"),
                 int(run_data["target_seen"])
                 if run_data.get("target_seen") is not None
                 else None,
@@ -343,517 +353,344 @@ class Leaderboard:
             d["target_seen"] = bool(d["target_seen"])
         return d
 
-    # ---------------------------------------------------------------- scoring
-
-    def _fetch_reference_mins(self, scenario_id: str) -> Dict[str, Optional[float]]:
-        """Query MIN aggregates for successful runs on a given scenario.
-
-        Returns a dict with keys ``steps`` and ``time``, each holding the
-        minimum value across ALL successful runs (any mode), or ``None``
-        if no eligible rows exist.
-
-        .. note::
-
-           The ``dist`` reference minimum (D_min) is **not** fetched from
-           the database.  It is the Cartesian (Euclidean) distance between
-           the scenario's start position and its target position and must
-           be supplied externally via the ``d_min`` parameter on the
-           scoring methods.
-        """
-        row = self._conn.execute(
-            """\
-            SELECT
-                MIN(steps_taken),
-                MIN(duration_s)
-            FROM runs
-            WHERE scenario_id = ? AND success = 1
-            """,
-            (scenario_id,),
-        ).fetchone()
-        return {
-            "steps": row[0],
-            "time": row[1],
-        }
+    # ---------------------------------------------------------------- Pareto
 
     @staticmethod
-    def _safe_ratio(numerator: Optional[float], denominator: Optional[float]) -> float:
-        """Return numerator/denominator, or 1.0 when either value is missing/zero.
-
-        The fallback of 1.0 means "neutral" — no bonus, no penalty.
-        """
-        if numerator is None or denominator is None or denominator == 0:
-            return 1.0
-        return numerator / denominator
-
-    def compute_score_for_run(
-        self,
-        run: Dict[str, Any],
-        scenario_id: str,
-        d_min: Optional[float] = None,
-    ) -> float:
-        """Compute a normalised score for a single completed run.
-
-        For a **successful** run the score S ∈ [0, 100] is:
-
-            S = [0.3·(D_min/D_agent)
-               + 0.3·(Step_min/Step_agent)
-               + 0.3·(t_min/t_agent)
-               + 0.1·c] × 100
-
-        where D_min is the Cartesian (Euclidean) distance between the
-        scenario's start position and the target position, Step_min and
-        t_min are the per-scenario minimums drawn from the database, and
-        c is the run's confidence (0 if absent).
-        Missing or zero agent values default the corresponding ratio to 1.0.
-
-        For a **failed** run the score F ∈ [-100, 0] is:
-
-            F = -100 × [0.5·(1 - E) + 0.5·c]
-
-        where E = fov_coverage (0 if absent) and c = confidence (0 if absent).
-        If target_seen is True the result is multiplied by 1.5 before clamping.
-
-        Parameters
-        ----------
-        run : dict
-            A run dict as returned by :meth:`get_run` or :meth:`_row_to_dict`.
-        scenario_id : str
-            The scenario the run belongs to (used to query reference mins).
-        d_min : float or None
-            The Cartesian (Euclidean) distance between the scenario's
-            start position and the target position.  Used as D_min in
-            the success scoring formula.  When ``None`` the distance
-            ratio defaults to 1.0 (neutral).
-
-        Returns
-        -------
-        float
-            Score in [0, 100] for success, or [-100, 0] for failure.
-        """
-        if run.get("success"):
-            return self._score_success(run, scenario_id, d_min=d_min)
-        return self._score_failure(run)
-
-    def _compute_score_with_mins(
-        self,
-        run: Dict[str, Any],
-        mins: Dict[str, Any],
-        d_min: Optional[float] = None,
-    ) -> float:
-        """Like :meth:`compute_score_for_run` but uses pre-loaded reference mins.
-
-        Avoids a DB round-trip per run when mins are already known.
-
-        Parameters
-        ----------
-        run : dict
-            A run dict.
-        mins : dict
-            Pre-loaded reference mins (keys ``steps``, ``time``).
-        d_min : float or None
-            The Cartesian (Euclidean) distance between the scenario's
-            start position and the target position (D_min).  When
-            ``None`` the distance ratio defaults to 1.0 (neutral).
-        """
-        if run.get("success"):
-            full_mins = dict(mins)
-            full_mins["dist"] = d_min
-            return self._score_success_with_mins(run, full_mins)
-        return self._score_failure(run)
-
-    def _score_success(
-        self,
-        run: Dict[str, Any],
-        scenario_id: str,
-        d_min: Optional[float] = None,
-    ) -> float:
-        """Compute success score S ∈ [0, 100].
-
-        Parameters
-        ----------
-        run : dict
-            A successful run dict.
-        scenario_id : str
-            Used to fetch ``steps`` and ``time`` reference mins from DB.
-        d_min : float or None
-            Cartesian start-to-target distance for the scenario (D_min).
-        """
-        mins = self._fetch_reference_mins(scenario_id)
-        mins["dist"] = d_min
-        return self._score_success_with_mins(run, mins)
-
-    def _score_success_with_mins(
-        self, run: Dict[str, Any], mins: Dict[str, Any]
-    ) -> float:
-        """Compute success score S ∈ [0, 100] given pre-loaded reference mins.
-
-        ``mins`` must contain:
-        - ``dist``: D_min — Cartesian distance from start to target
-          (or ``None`` for neutral ratio).
-        - ``steps``: minimum steps from DB (or ``None``).
-        - ``time``: minimum duration from DB (or ``None``).
-        """
-        # Weights: distance 30 %, steps 30 %, time 30 %, confidence 10 %
-        WEIGHT_DIST = 0.3
-        WEIGHT_STEPS = 0.3
-        WEIGHT_TIME = 0.3
-        WEIGHT_CONF = 0.1
-
-        ratio_dist = self._safe_ratio(mins.get("dist"), run.get("distance_travelled"))
-        ratio_steps = self._safe_ratio(mins.get("steps"), run.get("steps_taken"))
-        ratio_time = self._safe_ratio(mins.get("time"), run.get("duration_s"))
-        conf = run.get("confidence")
-        confidence = conf if conf is not None else 0.0
-
-        raw = (
-            WEIGHT_DIST * ratio_dist
-            + WEIGHT_STEPS * ratio_steps
-            + WEIGHT_TIME * ratio_time
-            + WEIGHT_CONF * confidence
-        ) * 100.0
-
-        return max(0.0, min(100.0, raw))
-
-    def _score_failure(self, run: Dict[str, Any]) -> float:
-        """Compute failure score F ∈ [-100, 0]."""
-        # E = exploration (fov_coverage), c = confidence
-        WEIGHT_EXPLORE = 0.5
-        WEIGHT_CONF = 0.5
-        TARGET_SEEN_MULTIPLIER = 1.5
-
-        fov = run.get("fov_coverage")
-        exploration = fov if fov is not None else 0.0
-        conf = run.get("confidence")
-        confidence = conf if conf is not None else 0.0
-
-        raw = -100.0 * (WEIGHT_EXPLORE * (1.0 - exploration) + WEIGHT_CONF * confidence)
-
-        if run.get("target_seen"):
-            raw *= TARGET_SEEN_MULTIPLIER
-
-        return max(-100.0, min(0.0, raw))
-
-    def compute_score_breakdown(
-        self,
-        run: Dict[str, Any],
-        scenario_id: str,
-        d_min: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Compute a detailed score breakdown for a single run.
-
-        Returns a dict containing:
-        - ``total``: final score (same as :meth:`compute_score_for_run`)
-        - ``success``: whether the run was successful
-        - ``components``: list of dicts with ``name``, ``value``, ``weight``,
-          ``contribution`` for each scoring component
-        - ``reference_mins``: the per-scenario minimums used for ratios
-          (only for successful runs)
-
-        Parameters
-        ----------
-        run : dict
-            A run dict as returned by :meth:`get_run`.
-        scenario_id : str
-            The scenario the run belongs to.
-        d_min : float or None
-            The Cartesian (Euclidean) distance between the scenario's
-            start position and the target position (D_min).  When
-            ``None`` the distance ratio defaults to 1.0 (neutral).
-
-        Returns
-        -------
-        dict
-        """
-        is_success = bool(run.get("success"))
-
-        if is_success:
-            return self._breakdown_success(run, scenario_id, d_min=d_min)
-        return self._breakdown_failure(run)
-
-    def _breakdown_success(
-        self,
-        run: Dict[str, Any],
-        scenario_id: str,
-        d_min: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """Build detailed breakdown for a successful run.
-
-        Parameters
-        ----------
-        run : dict
-            A successful run dict.
-        scenario_id : str
-            Used to fetch ``steps`` and ``time`` reference mins from DB.
-        d_min : float or None
-            Cartesian start-to-target distance for the scenario (D_min).
-        """
-        mins = self._fetch_reference_mins(scenario_id)
-        mins["dist"] = d_min
-
-        WEIGHT_DIST = 0.3
-        WEIGHT_STEPS = 0.3
-        WEIGHT_TIME = 0.3
-        WEIGHT_CONF = 0.1
-
-        ratio_dist = self._safe_ratio(mins.get("dist"), run.get("distance_travelled"))
-        ratio_steps = self._safe_ratio(mins.get("steps"), run.get("steps_taken"))
-        ratio_time = self._safe_ratio(mins.get("time"), run.get("duration_s"))
-        conf = run.get("confidence")
-        confidence = conf if conf is not None else 0.0
-
-        components = [
-            {
-                "name": "distance",
-                "ratio": round(ratio_dist, 4),
-                "weight": WEIGHT_DIST,
-                "contribution": round(WEIGHT_DIST * ratio_dist * 100.0, 2),
-            },
-            {
-                "name": "steps",
-                "ratio": round(ratio_steps, 4),
-                "weight": WEIGHT_STEPS,
-                "contribution": round(WEIGHT_STEPS * ratio_steps * 100.0, 2),
-            },
-            {
-                "name": "time",
-                "ratio": round(ratio_time, 4),
-                "weight": WEIGHT_TIME,
-                "contribution": round(WEIGHT_TIME * ratio_time * 100.0, 2),
-            },
-            {
-                "name": "confidence",
-                "value": round(confidence, 4),
-                "weight": WEIGHT_CONF,
-                "contribution": round(WEIGHT_CONF * confidence * 100.0, 2),
-            },
-        ]
-
-        total = self._score_success_with_mins(run, mins)
-
-        return {
-            "total": round(total, 2),
-            "success": True,
-            "components": components,
-            "reference_mins": {
-                "distance": mins.get("dist"),
-                "steps": mins.get("steps"),
-                "time": mins.get("time"),
-            },
-        }
-
-    def _breakdown_failure(self, run: Dict[str, Any]) -> Dict[str, Any]:
-        """Build detailed breakdown for a failed run."""
-        WEIGHT_EXPLORE = 0.5
-        WEIGHT_CONF = 0.5
-        TARGET_SEEN_MULTIPLIER = 1.5
-
-        fov = run.get("fov_coverage")
-        exploration = fov if fov is not None else 0.0
-        conf = run.get("confidence")
-        confidence = conf if conf is not None else 0.0
-        target_seen = bool(run.get("target_seen"))
-
-        explore_contrib = WEIGHT_EXPLORE * (1.0 - exploration)
-        conf_contrib = WEIGHT_CONF * confidence
-        raw = -100.0 * (explore_contrib + conf_contrib)
-
-        multiplier_applied = False
-        if target_seen:
-            raw *= TARGET_SEEN_MULTIPLIER
-            multiplier_applied = True
-
-        total = max(-100.0, min(0.0, raw))
-
-        components = [
-            {
-                "name": "exploration",
-                "value": round(exploration, 4),
-                "weight": WEIGHT_EXPLORE,
-                "contribution": round(-100.0 * explore_contrib, 2),
-            },
-            {
-                "name": "confidence",
-                "value": round(confidence, 4),
-                "weight": WEIGHT_CONF,
-                "contribution": round(-100.0 * conf_contrib, 2),
-            },
-        ]
-
-        result: Dict[str, Any] = {
-            "total": round(total, 2),
-            "success": False,
-            "components": components,
-            "target_seen": target_seen,
-        }
-        if multiplier_applied:
-            result["target_seen_multiplier"] = TARGET_SEEN_MULTIPLIER
-
-        return result
-
-    def get_best_runs_per_scenario(
-        self, scenario_ids: List[str]
-    ) -> Dict[str, Dict[str, Any]]:
-        """Return the single best successful run for each scenario.
-
-        "Best" is defined as: success=True, then fewest steps, then
-        shortest distance travelled.  Scenarios with no successful run
-        are omitted from the result.
-
-        Parameters
-        ----------
-        scenario_ids : list of str
-            Scenarios to look up.
-
-        Returns
-        -------
-        dict
-            ``{scenario_id: run_dict}`` for each scenario that has at
-            least one successful run.
-        """
-        if not scenario_ids:
-            return {}
-
-        placeholders = ",".join("?" * len(scenario_ids))
-        rows = self._conn.execute(
-            f"""\
-            SELECT * FROM runs AS r
-            WHERE r.success = 1
-              AND r.scenario_id IN ({placeholders})
-              AND r.steps_taken = (
-                  SELECT MIN(r2.steps_taken)
-                  FROM runs r2
-                  WHERE r2.scenario_id = r.scenario_id
-                    AND r2.success = 1
-              )
-            ORDER BY r.scenario_id, COALESCE(r.distance_travelled, 9e18) ASC
-            """,
-            list(scenario_ids),
-        ).fetchall()
-
-        # Keep the first row per scenario: fewest steps, then shortest distance.
-        result: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            d = self._row_to_dict(row)
-            sid = d["scenario_id"]
-            if sid not in result:
-                result[sid] = d
-        return result
-
-    def get_global_leaderboard(
-        self,
-        scenario_ids: List[str],
-        limit: int = 50,
-        mode: Optional[str] = None,
-        d_min_by_scenario: Optional[Dict[str, float]] = None,
+    def compute_pareto_front(
+        runs: List[Dict[str, Any]],
+        objectives: List[str],
     ) -> List[Dict[str, Any]]:
-        """Aggregate per-scenario scores into a global agent ranking.
-
-        For each agent (identified by ``player_name`` or ``model_name``),
-        the best run per scenario is selected (success first, then fewest
-        steps, then shortest distance).  :meth:`compute_score_for_run` is
-        called on each best run and the results are summed.
+        """Compute the Pareto front for a list of runs (all objectives minimised).
 
         Parameters
         ----------
-        scenario_ids : list of str
-            Only runs belonging to these scenarios are considered.
-        limit : int
-            Maximum number of agents to return (default 50).
-        mode : str or None
-            Optional filter (``"ai"`` or ``"human"``).
-        d_min_by_scenario : dict or None
-            Mapping of ``{scenario_id: d_min}`` where *d_min* is the
-            Cartesian (Euclidean) distance between the scenario's start
-            position and its target position.  Used as D_min in the
-            success scoring formula.  Scenarios missing from the dict
-            (or when ``None`` is passed) default to a neutral distance
-            ratio of 1.0.
+        runs : list of dict
+            Run dicts.  Each must contain the keys listed in *objectives*.
+        objectives : list of str
+            Column names to minimise (e.g. ``["steps_taken", "duration_s",
+            "distance_travelled"]``).
 
         Returns
         -------
         list of dict
-            Each entry contains:
-            ``agent_name``, ``total_score``, ``scenarios_attempted``,
-            ``runs`` (list of best-run dicts per scenario with a ``score``
-            field added to each).
-            Sorted by ``total_score`` descending.
+            The subset of *runs* that lie on the Pareto front (non-dominated).
         """
-        if not scenario_ids:
+        if not runs:
             return []
 
-        placeholders = ",".join("?" * len(scenario_ids))
-        params: list[Any] = list(scenario_ids)
+        def _dominates(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+            """Return True if *a* dominates *b* (all objectives <=, at least one <)."""
+            at_least_one_better = False
+            for obj in objectives:
+                va = a.get(obj) if a.get(obj) is not None else float("inf")
+                vb = b.get(obj) if b.get(obj) is not None else float("inf")
+                if va > vb:
+                    return False
+                if va < vb:
+                    at_least_one_better = True
+            return at_least_one_better
 
-        mode_clause = ""
-        if mode is not None:
-            mode_clause = " AND mode = ?"
-            params.append(mode)
+        front: List[Dict[str, Any]] = []
+        for candidate in runs:
+            is_dominated = False
+            new_front: List[Dict[str, Any]] = []
+            for existing in front:
+                if _dominates(existing, candidate):
+                    is_dominated = True
+                    new_front.append(existing)
+                elif _dominates(candidate, existing):
+                    continue
+                else:
+                    new_front.append(existing)
+            if not is_dominated:
+                new_front.append(candidate)
+            front = new_front
+        return front
 
-        rows = self._conn.execute(
-            f"""\
-            SELECT * FROM runs
-            WHERE scenario_id IN ({placeholders}){mode_clause}
-            ORDER BY success DESC, steps_taken ASC, distance_travelled ASC
-            """,
-            params,
-        ).fetchall()
+    @staticmethod
+    def select_best_run_pareto(
+        runs: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Select the single best run for an agent on a scenario using Pareto.
 
-        if not rows:
-            return []
+        Strategy:
+        1. Filter successful runs.
+        2. Compute Pareto front on (steps_taken, duration_s, distance_travelled).
+        3. Pick the run closest to the origin (normalised Euclidean distance).
+        4. If no successful runs, pick the run with the fewest steps.
 
-        # Group all runs by (agent_name, scenario_id), keeping best run only.
-        AgentKey = str
-        agent_scenario_best: Dict[AgentKey, Dict[str, Dict[str, Any]]] = {}
+        Returns ``None`` if *runs* is empty.
+        """
+        if not runs:
+            return None
 
-        for row in rows:
-            run = self._row_to_dict(row)
-            agent_name: str = (
-                run.get("player_name") or run.get("model_name") or "unknown"
-            )
-            sid: str = run["scenario_id"]
+        objectives = ["steps_taken", "duration_s", "distance_travelled"]
+        successful = [r for r in runs if r.get("success")]
 
-            if agent_name not in agent_scenario_best:
-                agent_scenario_best[agent_name] = {}
+        if successful:
+            front = Leaderboard.compute_pareto_front(successful, objectives)
+            if len(front) == 1:
+                return front[0]
 
-            # Rows are already ordered best-first; keep first seen per (agent, scenario).
-            if sid not in agent_scenario_best[agent_name]:
-                agent_scenario_best[agent_name][sid] = run
+            # Normalise each objective to [0, 1] across the front, then pick
+            # the run with the smallest Euclidean distance to origin.
+            mins = {}
+            maxs = {}
+            for obj in objectives:
+                vals = [r.get(obj, 0) if r.get(obj) is not None else 0 for r in front]
+                mins[obj] = min(vals) if vals else 0
+                maxs[obj] = max(vals) if vals else 1
 
-        # Pre-load reference mins for all scenarios in one pass to avoid N+1 queries.
-        ref_mins: Dict[str, Dict[str, Any]] = {
-            sid: self._fetch_reference_mins(sid) for sid in scenario_ids
-        }
+            best = None
+            best_dist = float("inf")
+            for r in front:
+                dist_sq = 0.0
+                for obj in objectives:
+                    v = r.get(obj, 0) if r.get(obj) is not None else 0
+                    span = maxs[obj] - mins[obj]
+                    norm = (v - mins[obj]) / span if span > 0 else 0.0
+                    dist_sq += norm**2
+                if dist_sq < best_dist:
+                    best_dist = dist_sq
+                    best = r
+            return best
 
-        # Build leaderboard entries.
-        d_mins = d_min_by_scenario or {}
-        entries: List[Dict[str, Any]] = []
-        for agent_name, scenario_runs in agent_scenario_best.items():
-            total_score = 0.0
-            best_runs: List[Dict[str, Any]] = []
-            scenario_scores: Dict[str, float] = {}
-            for sid, run in scenario_runs.items():
-                score = self._compute_score_with_mins(
-                    run,
-                    ref_mins.get(sid, {"steps": None, "time": None}),
-                    d_min=d_mins.get(sid),
-                )
-                total_score += score
-                run_copy = dict(run)
-                run_copy["score"] = score
-                best_runs.append(run_copy)
-                scenario_scores[sid] = round(score, 1)
-            entries.append(
+        # No successful runs — pick the one with the fewest steps.
+        return min(runs, key=lambda r: r.get("steps_taken") or float("inf"))
+
+    def get_scenario_results(
+        self, scenario_id: str, mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return flat metrics for a scenario: one best run per agent.
+
+        Parameters
+        ----------
+        scenario_id : str
+            Scenario to query.
+        mode : str or None
+            Optional filter (``"ai"`` or ``"human"``).
+
+        Returns
+        -------
+        dict
+            ``{"scenario_id": ..., "agents": [...]}``.
+            Each agent entry: ``agent_name``, flat metrics, ``run_id``.
+        """
+        all_runs = self.get_runs(scenario_id=scenario_id, mode=mode, limit=10000)
+
+        # Group runs by agent name.
+        by_agent: Dict[str, List[Dict[str, Any]]] = {}
+        for run in all_runs:
+            agent = run.get("player_name") or run.get("model_name") or "unknown"
+            by_agent.setdefault(agent, []).append(run)
+
+        agents: List[Dict[str, Any]] = []
+        for agent_name, agent_runs in by_agent.items():
+            best = self.select_best_run_pareto(agent_runs)
+            if best is None:
+                continue
+            agents.append(
                 {
                     "agent_name": agent_name,
-                    "total_score": total_score,
-                    "scenarios_attempted": len(scenario_runs),
-                    "scenario_scores": scenario_scores,
-                    "runs": best_runs,
+                    "run_id": best.get("id"),
+                    "success": best.get("success", False),
+                    "steps_taken": best.get("steps_taken"),
+                    "duration_s": best.get("duration_s"),
+                    "distance_travelled": best.get("distance_travelled"),
+                    "target_seen": best.get("target_seen"),
                 }
             )
 
-        entries.sort(key=lambda e: e["total_score"], reverse=True)
-        return entries[:limit]
+        # Assign Pareto ranks (layered Pareto fronts).
+        agents = self._assign_pareto_ranks(agents)
+        return {"scenario_id": scenario_id, "agents": agents}
+
+    def get_global_results(
+        self,
+        scenario_ids: List[str],
+        mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Global results: average metrics for agents that completed ALL scenarios.
+
+        Parameters
+        ----------
+        scenario_ids : list of str
+            All scenario IDs in the benchmark.
+        mode : str or None
+            Optional filter.
+
+        Returns
+        -------
+        dict
+            ``{"scenario_ids": [...], "agents": [...]}``.
+            Each agent entry has averaged metrics across all scenarios.
+        """
+        if not scenario_ids:
+            return {"scenario_ids": [], "agents": []}
+
+        total_scenarios = len(scenario_ids)
+
+        # Collect best run per (agent, scenario).
+        agent_scenarios: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for sid in scenario_ids:
+            result = self.get_scenario_results(sid, mode=mode)
+            for entry in result["agents"]:
+                name = entry["agent_name"]
+                agent_scenarios.setdefault(name, {})[sid] = entry
+
+        # Keep only agents that participated in ALL scenarios.
+        complete_agents: List[Dict[str, Any]] = []
+        metric_keys = [
+            "steps_taken",
+            "duration_s",
+            "distance_travelled",
+        ]
+
+        for agent_name, scenarios in agent_scenarios.items():
+            if len(scenarios) < total_scenarios:
+                continue
+
+            successes = sum(1 for e in scenarios.values() if e.get("success"))
+            avg_metrics: Dict[str, Any] = {
+                "agent_name": agent_name,
+                "scenarios_completed": len(scenarios),
+                "success_rate": successes / total_scenarios,
+            }
+
+            for key in metric_keys:
+                vals = [e[key] for e in scenarios.values() if e.get(key) is not None]
+                avg_metrics[f"avg_{key}"] = sum(vals) / len(vals) if vals else None
+
+            # Per-scenario breakdown.
+            avg_metrics["per_scenario"] = {
+                sid: entry for sid, entry in scenarios.items()
+            }
+            complete_agents.append(avg_metrics)
+
+        # Assign Pareto ranks (layered Pareto fronts on averaged metrics).
+        complete_agents = self._assign_pareto_ranks(
+            complete_agents,
+            key_map={
+                "steps_taken": "avg_steps_taken",
+                "duration_s": "avg_duration_s",
+                "distance_travelled": "avg_distance_travelled",
+            },
+        )
+        return {"scenario_ids": scenario_ids, "agents": complete_agents}
+
+    def _assign_pareto_ranks(
+        self,
+        agents: List[Dict[str, Any]],
+        key_map: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Assign unique ``pareto_rank`` using sorted rank-vector comparison.
+
+        For each metric the agents are ranked 1..N (lower-is-better for steps,
+        time, distance; higher-is-better for coverage — inverted so rank 1 is
+        always best).  Each agent's per-metric ranks are **sorted ascending**
+        to form a rank vector, then agents are compared **lexicographically**
+        on these vectors.  The resulting order gives a unique final rank.
+
+        Successful agents are always ranked above failed agents.
+
+        Parameters
+        ----------
+        agents : list of dict
+            Agent result dicts (must contain success + metric keys).
+        key_map : dict or None
+            Remap objective keys (e.g. ``{"steps_taken": "avg_steps_taken"}``).
+        """
+        km = key_map or {}
+        # Metrics where lower is better.
+        lower_better = [
+            km.get("steps_taken", "steps_taken"),
+            km.get("duration_s", "duration_s"),
+            km.get("distance_travelled", "distance_travelled"),
+        ]
+        # Metrics where higher is better.
+        higher_better: list[str] = []
+
+        ok = [a for a in agents if a.get("success") or a.get("success_rate", 0) > 0]
+        fail = [a for a in agents if a not in ok]
+
+        def _rank_group(group: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            if not group:
+                return []
+            n = len(group)
+            # For each metric, compute per-agent rank (1-based, ties get same rank).
+            per_metric_ranks: Dict[str, List[int]] = {
+                a.get("agent_name", str(i)): [] for i, a in enumerate(group)
+            }
+            all_metrics = lower_better + higher_better
+            for metric in all_metrics:
+                reverse = metric in higher_better
+                vals = []
+                for i, a in enumerate(group):
+                    v = a.get(metric)
+                    if v is None:
+                        v = float("inf") if not reverse else float("-inf")
+                    vals.append((v, i))
+                vals.sort(key=lambda x: x[0], reverse=reverse)
+                # Assign ranks with ties.
+                ranks = [0] * n
+                current_rank = 1
+                for pos, (val, idx) in enumerate(vals):
+                    if pos > 0 and val != vals[pos - 1][0]:
+                        current_rank = pos + 1
+                    ranks[idx] = current_rank
+                for i, a in enumerate(group):
+                    key = a.get("agent_name", str(i))
+                    per_metric_ranks[key].append(ranks[i])
+
+            # Sort each agent's rank vector ascending, then compare lexicographically.
+            for i, a in enumerate(group):
+                key = a.get("agent_name", str(i))
+                a["_rank_vector"] = sorted(per_metric_ranks[key])
+
+            group.sort(key=lambda a: a["_rank_vector"])
+            return group
+
+        ok = _rank_group(ok)
+        fail = _rank_group(fail)
+
+        # Assign final ranks.
+        all_agents = ok + fail
+        for i, a in enumerate(all_agents):
+            a["pareto_rank"] = i + 1
+            a.pop("_rank_vector", None)
+
+        return all_agents
+
+    def get_agent_runs(
+        self, agent_name: str, scenario_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return all runs for a given agent, optionally filtered by scenario.
+
+        Parameters
+        ----------
+        agent_name : str
+            Agent name (matched against player_name or model_name).
+        scenario_id : str or None
+            Optional scenario filter.
+
+        Returns
+        -------
+        list of dict
+            All runs for this agent, ordered by created_at DESC.
+        """
+        clauses = ["(player_name = ? OR model_name = ?)"]
+        params: list[Any] = [agent_name, agent_name]
+
+        if scenario_id:
+            clauses.append("scenario_id = ?")
+            params.append(scenario_id)
+
+        where = "WHERE " + " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"SELECT * FROM runs {where} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     # ---------------------------------------------------------------- close
 
