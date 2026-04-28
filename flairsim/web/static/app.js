@@ -20,6 +20,7 @@ let currentRunDetailId = null;  // tracks active run-detail view
 let _startingSession = false;   // true while session creation is in progress
 let _spectatorMode = false;     // true when viewing someone else's session
 let _processesRefreshTimer = null; // polling timer for active processes
+let _currentModeFilter = 'ai';  // 'ai', 'human', or '' (both)
 
 // ===================================================================
 // Router
@@ -509,6 +510,21 @@ function switchResultsTab(tab) {
     }
 }
 
+function setModeFilter(mode) {
+    _currentModeFilter = mode;
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    // Reload whichever tab is active
+    const globalActive = !document.getElementById('res-panel-global').hidden;
+    if (globalActive) {
+        loadGlobalResults();
+    } else {
+        const select = document.getElementById('res-filter-scenario');
+        if (select && select.value) loadScenarioResults(select.value);
+    }
+}
+
 async function loadResultsPage() {
     // Populate scenario filter
     if (scenarios.length === 0) {
@@ -547,7 +563,8 @@ async function loadGlobalResults() {
     radarContainer.innerHTML = '';
 
     try {
-        const data = await apiFetch('/leaderboard/global');
+        const modeParam = _currentModeFilter ? '?mode=' + _currentModeFilter : '';
+        const data = await apiFetch('/leaderboard/global' + modeParam);
         const agents = data.agents || [];
 
         if (agents.length === 0) {
@@ -597,7 +614,8 @@ async function loadScenarioResults(scenarioId) {
     if (selectorContainer) selectorContainer.innerHTML = '';
 
     try {
-        const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId));
+        const modeParam = _currentModeFilter ? '?mode=' + _currentModeFilter : '';
+        const data = await apiFetch('/leaderboard/scenario/' + encodeURIComponent(scenarioId) + modeParam);
         const agents = data.agents || [];
         _resultsScenarioData = agents;
 

@@ -158,6 +158,11 @@
             <div class="results-tabs">
                 <button id="res-tab-global" class="lb-tab active" onclick="switchResultsTab('global')">Global Results</button>
                 <button id="res-tab-scenario" class="lb-tab" onclick="switchResultsTab('scenario')">Per Scenario</button>
+                <div class="mode-filter">
+                    <button class="mode-btn active" data-mode="ai" onclick="setModeFilter('ai')">AI</button>
+                    <button class="mode-btn" data-mode="human" onclick="setModeFilter('human')">Human</button>
+                    <button class="mode-btn" data-mode="" onclick="setModeFilter('')">Both</button>
+                </div>
             </div>
 
             <!-- Global panel -->

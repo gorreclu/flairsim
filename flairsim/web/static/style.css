@@ -1757,6 +1757,37 @@ kbd {
     display: flex;
     gap: 8px;
     margin-bottom: 20px;
+    align-items: center;
+}
+
+.mode-filter {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2px;
+}
+
+.mode-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 6px 14px;
+    cursor: pointer;
+    border-radius: calc(var(--radius) - 2px);
+    transition: all 0.2s var(--transition);
+}
+
+.mode-btn:hover {
+    color: var(--text-primary);
+}
+
+.mode-btn.active {
+    background: rgba(0, 212, 255, 0.12);
+    color: var(--accent);
 }
 
 .plot-container {
